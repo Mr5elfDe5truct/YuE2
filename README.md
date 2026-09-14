@@ -73,6 +73,15 @@ The staged Python API exposes `plan()` → `generate_semantic()` → `synthesize
    - Every song can auto-generate a customized album cover jacket derived from its musical style and lyrical themes.
    - Choose between **Cloud AI Diffusion** (Flux/SDXL serverless quality, 0 MB VRAM), **Procedural Graphic Studio** (algorithmic vinyl sleeve, 100% offline, zero VRAM, instant), or **Local AI Diffusion** (SD-Turbo on GPU sequenced post-audio).
    - Regenerate or change artwork anytime in the **Song Library & History** tab!
+5. **🎙️ Zero-Shot Audio Covers & Sample Remakes**:
+   - Upload any `.wav`, `.mp3`, or `.flac` recording or hum into the microphone in the **Sample & Remix Studio** tab.
+   - YuE2's acoustic transcriber extracts melodic pitch contours and rhythm into native ABC sheet music in seconds.
+   - Re-synthesize the sample into any target genre (`cot="melody"` for free style/accompaniment or `cot="full"` for harmonic preservation).
+6. **🎼 Musical Score Linter & Chord Palette**:
+   - Real-time verification of key signatures, bar duration consistency, and chord syntax before generating.
+   - Interactive chord palette to click and insert supported chords (`Am7`, `Fmaj7`, `C/E`, `G7sus4`, etc.).
+7. **🎧 A/B Studio Comparison Lab**:
+   - Audition any two generated tracks side-by-side with synchronized playback, structural diffs, and harmonic comparisons.
 
 ---
 

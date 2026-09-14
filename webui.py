@@ -45,6 +45,13 @@ from yue2.pipeline import YuE2Pipeline
 from yue2.protocol import GenerationConfig, Sampling
 from yue2.cli import doctor as cli_doctor
 from yue2.cover_art import create_cover_art, build_cover_prompt
+from yue2.transcriber import transcribe_audio_to_abc
+from yue2.score_analyzer import (
+    analyze_score,
+    format_score_report_markdown,
+    diff_two_scores,
+    CURATED_CHORD_PALETTE,
+)
 
 # Global pipeline cache
 PIPELINE: YuE2Pipeline | None = None
@@ -588,8 +595,77 @@ def regenerate_cover_art_for_song(folder_name: str, engine: str):
         raise gr.Error("Failed to generate cover art. Please check connection or try Procedural Studio.")
 
 
+def transcribe_sample_action(audio_path: str, bpm: int, key: str, offset_sec: float, max_sec: float):
+    if not audio_path:
+        raise gr.Error("Please upload or record an audio sample first.")
+    try:
+        abc = transcribe_audio_to_abc(
+            audio_path=audio_path,
+            bpm=int(bpm),
+            key=key,
+            offset_seconds=float(offset_sec),
+            max_seconds=float(max_sec),
+            title="Audio Sample Transcription",
+        )
+        analysis = analyze_score(abc)
+        report_md = format_score_report_markdown(analysis)
+        gr.Info(f"Transcribed audio sample ({analysis.get('bars_count')} bars at {bpm} BPM)!")
+        return abc, report_md
+    except Exception as e:
+        raise gr.Error(f"Transcription failed: {str(e)}")
+
+
+def lint_score_action(score_text: str):
+    if not score_text or not score_text.strip():
+        raise gr.Error("Please provide an ABC score to lint.")
+    analysis = analyze_score(score_text)
+    return format_score_report_markdown(analysis)
+
+
+def insert_chord_into_score(current_score: str, chord: str) -> str:
+    if not current_score:
+        return f'"{chord}" '
+    chord_tag = f'"{chord}"'
+    if '[V:Chords]' in current_score:
+        idx = current_score.find('[V:Chords]')
+        head = current_score[:idx + len('[V:Chords]')]
+        tail = current_score[idx + len('[V:Chords]'):]
+        return f"{head} {chord_tag} {tail.lstrip()}"
+    return f'{current_score.rstrip()} {chord_tag}'
+
+
+def compare_two_songs(song_a_id: str, song_b_id: str):
+    if not song_a_id or not song_b_id:
+        return None, None, "", None, None, "", "Select both Song A and Song B to compare."
+
+    audio_a, cover_a, score_a, details_a, _ = load_song_from_id(song_a_id)
+    audio_b, cover_b, score_b, details_b, _ = load_song_from_id(song_b_id)
+
+    diff_data = diff_two_scores(score_a or "", score_b or "")
+
+    tempo_status = "⚠️ Changed" if diff_data.get("tempo_changed") else "✅ Identical"
+    key_status = "⚠️ Changed" if diff_data.get("key_changed") else "✅ Identical"
+    bars_status = "Different length" if diff_data.get("bars_a") != diff_data.get("bars_b") else "Matched length"
+
+    diff_md = f"""### 🎧 A/B Studio Comparison: `{song_a_id}` vs `{song_b_id}`
+
+| Metric | Song A (`{song_a_id}`) | Song B (`{song_b_id}`) | Difference |
+|:---|:---:|:---:|:---:|
+| **Tempo** | {diff_data.get('tempo_a', '-')} BPM | {diff_data.get('tempo_b', '-')} BPM | {tempo_status} |
+| **Key** | {diff_data.get('key_a', '-')} | {diff_data.get('key_b', '-')} | {key_status} |
+| **Measures** | {diff_data.get('bars_a', '-')} Bars | {diff_data.get('bars_b', '-')} Bars | {bars_status} |
+"""
+
+    if diff_data.get("added_chords"):
+        diff_md += f"\n- **Chords unique to Song B**: `{', '.join(diff_data['added_chords'])}`\n"
+    if diff_data.get("removed_chords"):
+        diff_md += f"\n- **Chords unique to Song A**: `{', '.join(diff_data['removed_chords'])}`\n"
+
+    return audio_a, cover_a, score_a, audio_b, cover_b, score_b, diff_md
+
 
 def run_system_doctor():
+
     class Args:
         vae = "standard"
         model = None
@@ -1071,12 +1147,111 @@ def create_ui():
                                     metadata_output = gr.Code(label="Result Manifest", language="json", lines=5)
 
                 # ──────────────────────────────────────────────────────────────
-                # TAB 2: SCORE REHARMONIZATION & COVER
+                # ──────────────────────────────────────────────────────────────
+                # TAB 2: AUDIO SAMPLE & REMIX STUDIO
+                # ──────────────────────────────────────────────────────────────
+                with gr.TabItem("🎙️ Sample & Remix Studio"):
+                    with gr.Group(elem_classes=["depth-card"]):
+                        gr.Markdown("""
+                        ### 🎙️ Zero-Shot Audio Covers & Sample Remakes
+                        Upload any audio sample (`.wav`, `.mp3`, `.flac`) or record a melody/riff via microphone.
+                        YuE2's symbolic transcriber extracts the melodic pitch contours into native ABC sheet music, then synthesizes a brand-new complete production in your target style!
+                        """)
+                        with gr.Row():
+                            with gr.Column(scale=5):
+                                sample_audio_input = gr.Audio(
+                                    label="Upload Audio Sample or Record (.wav, .mp3, .flac)",
+                                    sources=["upload", "microphone"],
+                                    type="filepath"
+                                )
+                                with gr.Row():
+                                    sample_bpm = gr.Number(label="Target Tempo (BPM)", value=122, precision=0, scale=6)
+                                    sample_key = gr.Dropdown(label="Estimated Key", choices=["C", "G", "D", "A", "E", "F", "Bb", "Am", "Em", "Dm"], value="C", scale=6)
+                                with gr.Row():
+                                    sample_offset = gr.Number(label="Start Offset (sec)", value=0.0, precision=1, scale=6)
+                                    sample_max_sec = gr.Slider(label="Max Duration (sec)", minimum=5.0, maximum=45.0, value=30.0, step=1.0, scale=6)
+
+                                transcribe_btn = gr.Button("🎼 Transcribe Sample to ABC Melody", variant="primary", elem_classes=["btn-3d-primary"])
+
+                            with gr.Column(scale=7):
+                                sample_extracted_abc = gr.Code(label="Extracted Symbolic ABC Sheet Music (Preview & Edit)", language=None, lines=8)
+                                sample_analysis_display = gr.Markdown(value="*Upload an audio file and click Transcribe to inspect its musical structure.*")
+
+                    with gr.Group(elem_classes=["depth-card"]):
+                        gr.Markdown("#### 🎨 Target Re-creation Style & Production Settings")
+                        with gr.Row():
+                            with gr.Column(scale=6):
+                                sample_target_style = gr.Textbox(
+                                    label="Target Musical Style Prompt",
+                                    placeholder="English, 80s synthwave, driving electronic drums, analog synthesizer, warm bass, 122 BPM",
+                                    value="English, 80s synthwave, driving electronic drums, analog synthesizer, warm bass, 122 BPM",
+                                    lines=2,
+                                )
+                                with gr.Accordion("🏷️ Style Tag Palette (Click to add)", open=False):
+                                    with gr.Row():
+                                        for label, tag in GENRE_TAGS[:5]:
+                                            b = gr.Button(label, size="sm", elem_classes=["chip-btn"])
+                                            b.click(fn=add_style_tag, inputs=[sample_target_style, gr.State(tag)], outputs=sample_target_style)
+                                    with gr.Row():
+                                        for label, tag in VOCAL_TAGS[:4]:
+                                            b = gr.Button(label, size="sm", elem_classes=["chip-btn"])
+                                            b.click(fn=add_style_tag, inputs=[sample_target_style, gr.State(tag)], outputs=sample_target_style)
+
+                                sample_lyrics_input = gr.Textbox(
+                                    label="Lyrics (Aligned with the sample's melodic phrasing)",
+                                    placeholder="[Verse]\nEchoes in the neon light...\n\n[Chorus]\nTake me back to yesterday...",
+                                    value="[Verse]\nEchoes calling through the night\nFootsteps fading out of sight\n\n[Chorus]\nRunning down the neon highway\nNothing in the world can stop us now",
+                                    lines=5,
+                                )
+
+                            with gr.Column(scale=6):
+                                with gr.Row():
+                                    sample_remake_mode = gr.Radio(
+                                        label="Remake Mode",
+                                        choices=[
+                                            ("Melody Cover (Free Style/Harmony, cot='melody')", "melody"),
+                                            ("Harmonic Remake (Preserve Score & Chords, cot='full')", "full"),
+                                        ],
+                                        value="melody",
+                                    )
+                                with gr.Row():
+                                    sample_ode_steps = gr.Radio(
+                                        label="ODE Steps",
+                                        choices=[("8 (Fast)", 8), ("16 (Standard)", 16), ("32 (Studio Master)", 32)],
+                                        value=16,
+                                    )
+                                    sample_cover_engine = gr.Dropdown(
+                                        label="Cover Art Engine",
+                                        choices=[
+                                            ("☁️ Cloud AI", "cloud"),
+                                            ("🎨 Procedural", "procedural"),
+                                            ("⚡ Local AI", "local"),
+                                            ("🚫 None", "none"),
+                                        ],
+                                        value="cloud",
+                                    )
+
+                                sample_generate_btn = gr.Button(
+                                    "⚡ Recreate Track from Sample",
+                                    variant="primary",
+                                    size="lg",
+                                    elem_classes=["btn-3d-primary"],
+                                )
+
+                                with gr.Row():
+                                    with gr.Column(scale=5):
+                                        sample_rendered_cover = gr.Image(label="Vinyl Album Jacket", type="filepath", elem_classes=["cover-art-card"])
+                                    with gr.Column(scale=7):
+                                        sample_rendered_audio = gr.Audio(label="Recreated Song Audio", type="filepath")
+                                        sample_rendered_status = gr.Textbox(label="Status", interactive=False)
+
+                # ──────────────────────────────────────────────────────────────
+                # TAB 3: SCORE REHARMONIZATION & MUSICAL LINTER
                 # ──────────────────────────────────────────────────────────────
                 with gr.TabItem("🎼 Score & Reharmonize"):
                     with gr.Group(elem_classes=["depth-card"]):
                         gr.Markdown("""
-                        ### 🎼 Score-Conditioned Synthesis & Reharmonization
+                        ### 🎼 Score-Conditioned Synthesis, Reharmonization & Musical Linter
                         YuE2's symbolic CoT architecture allows you to **edit musical chords, change notes, or adjust the tempo header**, and then synthesize high-fidelity audio directly from your revised score!
                         """)
                         with gr.Row():
@@ -1084,7 +1259,7 @@ def create_ui():
                                 reharmonize_score_input = gr.Code(
                                     label="ABC Sheet Music (Edit chords in quotes, e.g. \"Am7\", \"F#m\", or modify note durations)",
                                     language=None,
-                                    lines=14,
+                                    lines=13,
                                     value="""X:1
 M:4/4
 L:1/32
@@ -1096,18 +1271,74 @@ V:Chords clef=treble
 [V:Vocal] z32 | z8 B2 B2 B4 c2 c2 c2 B2 A4 | z8 B2 B2 B4 c2 c2 c2 B2 A4 |]
 [V:Chords] "G" [G4B4d4] z28 | "Em" [E4G4B4] z28 | "C" [C4E4G4] z28 |]""",
                                 )
-                                synthesize_score_btn = gr.Button(
-                                    "✨ Synthesize Audio from this Score",
-                                    variant="primary",
-                                    size="lg",
-                                    elem_classes=["btn-3d-primary"],
-                                )
+                                with gr.Row():
+                                    lint_score_btn = gr.Button("🔍 Check & Lint Score", variant="secondary", elem_classes=["btn-3d-secondary"], scale=5)
+                                    synthesize_score_btn = gr.Button("✨ Synthesize Audio from this Score", variant="primary", size="lg", elem_classes=["btn-3d-primary"], scale=7)
+
+                                with gr.Accordion("🎹 Quick Chord Palette (Click to insert chord into score)", open=False):
+                                    with gr.Row():
+                                        for chord in CURATED_CHORD_PALETTE[:7]:
+                                            b = gr.Button(chord, size="sm", elem_classes=["chip-btn"])
+                                            b.click(fn=insert_chord_into_score, inputs=[reharmonize_score_input, gr.State(chord)], outputs=[reharmonize_score_input])
+                                    with gr.Row():
+                                        for chord in CURATED_CHORD_PALETTE[7:14]:
+                                            b = gr.Button(chord, size="sm", elem_classes=["chip-btn"])
+                                            b.click(fn=insert_chord_into_score, inputs=[reharmonize_score_input, gr.State(chord)], outputs=[reharmonize_score_input])
+                                    with gr.Row():
+                                        for chord in CURATED_CHORD_PALETTE[14:21]:
+                                            b = gr.Button(chord, size="sm", elem_classes=["chip-btn"])
+                                            b.click(fn=insert_chord_into_score, inputs=[reharmonize_score_input, gr.State(chord)], outputs=[reharmonize_score_input])
+
+                                score_lint_output = gr.Markdown(value="*Click 'Check & Lint Score' to verify key signature, bar lengths, and chord syntax.*")
 
                             with gr.Column(scale=5):
                                 reharmonized_cover_output = gr.Image(label="Vinyl Album Jacket", type="filepath", elem_classes=["cover-art-card"])
                                 reharmonized_audio_output = gr.Audio(label="Reharmonized Song Audio", type="filepath")
                                 reharmonized_status = gr.Textbox(label="Status", interactive=False)
                                 reharmonized_meta = gr.Code(label="Receipt", language="json", lines=5)
+
+                # ──────────────────────────────────────────────────────────────
+                # TAB 4: A/B COMPARISON LAB
+                # ──────────────────────────────────────────────────────────────
+                with gr.TabItem("🎧 A/B Comparison Lab"):
+                    with gr.Group(elem_classes=["depth-card"]):
+                        gr.Markdown("""
+                        ### 🎧 Side-by-Side A/B Studio Comparison
+                        Compare any two generated songs, reharmonized versions, or sample remakes side-by-side. Inspect differences in tempo, key, measures, and harmonic chord progressions!
+                        """)
+                        with gr.Row():
+                            compare_a_select = gr.Dropdown(
+                                label="Track A (Reference / Original)",
+                                choices=initial_library_choices,
+                                value=initial_choice,
+                                scale=5,
+                            )
+                            compare_b_select = gr.Dropdown(
+                                label="Track B (Remake / Variation)",
+                                choices=initial_library_choices,
+                                value=initial_library_choices[1][1] if len(initial_library_choices) > 1 else initial_choice,
+                                scale=5,
+                            )
+                            run_compare_btn = gr.Button("⚖️ Compare Tracks", variant="primary", scale=2, elem_classes=["btn-3d-primary"])
+
+                        with gr.Row():
+                            with gr.Column(scale=6):
+                                gr.Markdown("#### 🎵 Track A")
+                                compare_cover_a = gr.Image(label="Track A Cover", value=initial_cover, type="filepath", elem_classes=["cover-art-card"])
+                                compare_audio_a = gr.Audio(label="Track A Audio", value=initial_audio, type="filepath")
+                                with gr.Accordion("Track A Score", open=False):
+                                    compare_score_a = gr.Code(label="Track A ABC Score", value=initial_score, language=None, lines=6)
+
+                            with gr.Column(scale=6):
+                                gr.Markdown("#### 🎵 Track B")
+                                compare_cover_b = gr.Image(label="Track B Cover", type="filepath", elem_classes=["cover-art-card"])
+                                compare_audio_b = gr.Audio(label="Track B Audio", type="filepath")
+                                with gr.Accordion("Track B Score", open=False):
+                                    compare_score_b = gr.Code(label="Track B ABC Score", language=None, lines=6)
+
+                        with gr.Group(elem_classes=["depth-card"]):
+                            compare_diff_display = gr.Markdown(value="*Select two songs above and click 'Compare Tracks' for a musical and structural breakdown.*")
+
 
                 # ──────────────────────────────────────────────────────────────
                 # TAB 3: ACOUSTIC & SAMPLING ENGINE
@@ -1345,17 +1576,97 @@ V:Chords clef=treble
             outputs=[library_audio, library_cover, library_score, library_details, library_select],
         )
 
+        # Transcribe Audio Sample Button
+        transcribe_btn.click(
+            fn=transcribe_sample_action,
+            inputs=[sample_audio_input, sample_bpm, sample_key, sample_offset, sample_max_sec],
+            outputs=[sample_extracted_abc, sample_analysis_display],
+        )
+
+        # Recreate Song from Sample Button
+        sample_generate_btn.click(
+            fn=lambda s, l, c, a, se, cfg, o, t, tp, rp, dev, off, cov: generate_music(
+                s, l, c, a, se, cfg, o, t, tp, rp, "Full Song (Audio + Score)", dev, off, cov
+            ),
+            inputs=[
+                sample_target_style,
+                sample_lyrics_input,
+                sample_remake_mode,
+                sample_extracted_abc,
+                seed_box,
+                cfg_slider,
+                sample_ode_steps,
+                temp_slider,
+                topp_slider,
+                rep_slider,
+                device_select,
+                offload_toggle,
+                sample_cover_engine,
+            ],
+            outputs=[
+                sample_rendered_audio,
+                sample_rendered_cover,
+                score_display,
+                reharmonize_score_input,
+                sample_rendered_status,
+                metadata_output,
+                library_table,
+                library_select,
+            ],
+        )
+
+        # Lint Score Button
+        lint_score_btn.click(
+            fn=lint_score_action,
+            inputs=[reharmonize_score_input],
+            outputs=[score_lint_output],
+        )
+
+        # A/B Compare Songs Button
+        run_compare_btn.click(
+            fn=compare_two_songs,
+            inputs=[compare_a_select, compare_b_select],
+            outputs=[
+                compare_audio_a,
+                compare_cover_a,
+                compare_score_a,
+                compare_audio_b,
+                compare_cover_b,
+                compare_score_b,
+                compare_diff_display,
+            ],
+        )
+
         # Refresh Library Button
         def refresh_library():
             new_choices = get_library_choices()
             new_rows = get_library_table_data()
             first_val = new_choices[0][1] if new_choices else None
+            second_val = new_choices[1][1] if len(new_choices) > 1 else first_val
             audio, cover, score, details, _ = load_song_from_id(first_val) if first_val else (None, None, "", "No songs found.", "")
-            return gr.update(choices=new_choices, value=first_val), new_rows, audio, cover, score, details
+            return (
+                gr.update(choices=new_choices, value=first_val),
+                new_rows,
+                audio,
+                cover,
+                score,
+                details,
+                gr.update(choices=new_choices, value=first_val),
+                gr.update(choices=new_choices, value=second_val),
+            )
 
         refresh_library_btn.click(
             fn=refresh_library,
-            outputs=[library_select, library_table, library_audio, library_cover, library_score, library_details],
+            outputs=[
+                library_select,
+                library_table,
+                library_audio,
+                library_cover,
+                library_score,
+                library_details,
+                compare_a_select,
+                compare_b_select,
+            ],
         )
 
         # Load Selected Song into Studio
@@ -1381,6 +1692,7 @@ V:Chords clef=treble
 
         # Doctor
         doctor_btn.click(fn=run_system_doctor, outputs=[doctor_output])
+
 
 
     return app
