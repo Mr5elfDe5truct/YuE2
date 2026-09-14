@@ -22,9 +22,16 @@ import sys
 import time
 from pathlib import Path
 
-# Configure Windows and PyTorch environment
+# Configure Windows UTF-8 and PyTorch environment
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
+os.environ["PYTHONIOENCODING"] = "utf-8"
 
 import torch
 
@@ -37,6 +44,7 @@ except ImportError:
 from yue2.pipeline import YuE2Pipeline
 from yue2.protocol import GenerationConfig, Sampling
 from yue2.cli import doctor as cli_doctor
+from yue2.cover_art import create_cover_art, build_cover_prompt
 
 # Global pipeline cache
 PIPELINE: YuE2Pipeline | None = None
@@ -206,6 +214,7 @@ def generate_music(
     stage: str,
     device: str,
     offload_ar: bool,
+    cover_engine: str = "cloud",
     progress=gr.Progress(track_tqdm=True),
 ):
     if not style.strip():
@@ -259,6 +268,7 @@ def generate_music(
             }
             return (
                 None,  # No audio yet
+                None,  # No cover yet
                 score_text,
                 score_text,  # also update the Reharmonization editor
                 f"✅ Score plan generated successfully! Saved to: {output_dir.name}",
@@ -275,6 +285,24 @@ def generate_music(
             audio_path = str(output_dir / "audio.flac")
             score_text = result.abc or ""
             duration_s = round(len(result.audio) / result.sample_rate, 2)
+
+            cover_file = None
+            if cover_engine and cover_engine != "none":
+                progress(0.92, desc=f"Synthesizing album cover art ({cover_engine})...")
+                try:
+                    cover_file = create_cover_art(
+                        style=style.strip(),
+                        lyrics=lyrics.strip(),
+                        engine=cover_engine,
+                        output_dir=output_dir,
+                        title=output_dir.name,
+                        seed=seed,
+                    )
+                except Exception as ce:
+                    print(f"[!] Cover art generation note: {ce}")
+
+            cover_path = str(cover_file) if cover_file and Path(cover_file).exists() else None
+
             summary = {
                 "status": "complete",
                 "audio_seconds": duration_s,
@@ -283,12 +311,14 @@ def generate_music(
                 "cot": cot_mode,
                 "ode_steps": steps,
                 "cfg_scale": cfg_scale,
+                "cover_art": cover_path,
                 "output_dir": str(output_dir),
                 "timing": result.timing,
             }
             status_msg = f"🎵 Song generated: {duration_s}s audio ({steps} ODE steps, seed {seed})"
             return (
                 audio_path,
+                cover_path,
                 score_text,
                 score_text,  # also update Reharmonization tab
                 status_msg,
@@ -309,6 +339,7 @@ def synthesize_from_score(
     ode_steps: int,
     device: str,
     offload_ar: bool,
+    cover_engine: str = "cloud",
     progress=gr.Progress(track_tqdm=True),
 ):
     if not custom_abc.strip():
@@ -338,22 +369,42 @@ def synthesize_from_score(
             seed=seed,
             cfg_scale=float(cfg_scale),
         )
-        progress(0.9, desc="Saving reharmonized song...")
+        progress(0.85, desc="Saving reharmonized song...")
         result.save_artifacts(output_dir)
 
         audio_path = str(output_dir / "audio.flac")
         duration_s = round(len(result.audio) / result.sample_rate, 2)
+
+        cover_file = None
+        if cover_engine and cover_engine != "none":
+            progress(0.92, desc=f"Synthesizing album cover art ({cover_engine})...")
+            try:
+                cover_file = create_cover_art(
+                    style=style.strip(),
+                    lyrics=lyrics.strip(),
+                    engine=cover_engine,
+                    output_dir=output_dir,
+                    title=output_dir.name,
+                    seed=seed,
+                )
+            except Exception as ce:
+                print(f"[!] Cover art generation note: {ce}")
+
+        cover_path = str(cover_file) if cover_file and Path(cover_file).exists() else None
+
         summary = {
             "status": "complete",
             "type": "reharmonized_from_score",
             "audio_seconds": duration_s,
             "seed": seed,
             "ode_steps": steps,
+            "cover_art": cover_path,
             "output_dir": str(output_dir),
             "timing": result.timing,
         }
         return (
             audio_path,
+            cover_path,
             f"✨ Successfully synthesized audio from custom score! ({duration_s}s)",
             json.dumps(summary, indent=2),
             get_library_table_data(),
@@ -361,6 +412,7 @@ def synthesize_from_score(
         )
     except Exception as exc:
         raise gr.Error(f"Synthesis failed: {str(exc)}")
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -429,9 +481,10 @@ def get_library_table_data() -> list[list[str]]:
 
 def load_song_from_id(folder_name: str):
     if not folder_name:
-        return None, "", "Select a song from the library above.", ""
+        return None, None, "", "Select a song from the library above.", ""
     folder_path = Path("outputs") / folder_name
     audio_path = str(folder_path / "audio.flac") if (folder_path / "audio.flac").exists() else None
+    cover_path = str(folder_path / "cover.png") if (folder_path / "cover.png").exists() else None
     score_text = ""
     score_file = folder_path / "score.abc"
     if score_file.exists():
@@ -458,7 +511,7 @@ def load_song_from_id(folder_name: str):
         except Exception:
             pass
 
-    return audio_path, score_text, details_md, folder_name
+    return audio_path, cover_path, score_text, details_md, folder_name
 
 
 def load_selected_song_into_studio(folder_name: str):
@@ -499,9 +552,41 @@ def delete_selected_song(folder_name: str):
     new_choices = get_library_choices()
     new_rows = get_library_table_data()
     first_choice = new_choices[0][1] if new_choices else None
-    audio, score, details, _ = load_song_from_id(first_choice) if first_choice else (None, "", "No songs left.", "")
+    audio, cover, score, details, _ = load_song_from_id(first_choice) if first_choice else (None, None, "", "No songs left.", "")
     gr.Info(f"Deleted '{folder_name}' from library.")
-    return audio, score, details, gr.update(choices=new_choices, value=first_choice), new_rows
+    return audio, cover, score, details, gr.update(choices=new_choices, value=first_choice), new_rows
+
+
+def regenerate_cover_art_for_song(folder_name: str, engine: str):
+    if not folder_name:
+        raise gr.Error("Please select a song from the library first.")
+    folder_path = Path("outputs") / folder_name
+    req_file = folder_path / "request.json"
+    style = "modern music"
+    lyrics = ""
+    seed = random.randint(0, 2**31 - 1)
+    if req_file.exists():
+        try:
+            req = json.loads(req_file.read_text(encoding="utf-8"))
+            style = req.get("style", style)
+            lyrics = req.get("lyrics", "")
+            seed = req.get("seed", seed)
+        except Exception:
+            pass
+    cov = create_cover_art(
+        style=style,
+        lyrics=lyrics,
+        engine=engine,
+        output_dir=folder_path,
+        title=folder_name,
+        seed=seed,
+    )
+    if cov and Path(cov).exists():
+        gr.Info(f"✨ New album cover generated for {folder_name}!")
+        return str(cov)
+    else:
+        raise gr.Error("Failed to generate cover art. Please check connection or try Procedural Studio.")
+
 
 
 def run_system_doctor():
@@ -765,13 +850,29 @@ body, .gradio-container, #studio-wrapper {
   color: var(--studio-primary, #00f3ff);
   margin: 0.5rem 0 0.25rem 0;
 }
+
+/* 3D Vinyl Album Cover Art Card */
+.cover-art-card {
+  border-radius: 16px !important;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.75), 0 0 20px var(--studio-glow) !important;
+  border: 1px solid var(--studio-card-border, rgba(0, 243, 255, 0.3)) !important;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s ease !important;
+  overflow: hidden !important;
+  background: #000000 !important;
+}
+
+.cover-art-card:hover {
+  transform: translateY(-3px) scale(1.01) !important;
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.85), 0 0 28px var(--studio-primary, #00f3ff) !important;
+}
 """
+
 
 
 def create_ui():
     initial_library_choices = get_library_choices()
     initial_choice = initial_library_choices[0][1] if initial_library_choices else None
-    initial_audio, initial_score, initial_details, _ = load_song_from_id(initial_choice) if initial_choice else (None, "", "Select a song above.", "")
+    initial_audio, initial_cover, initial_score, initial_details, _ = load_song_from_id(initial_choice) if initial_choice else (None, None, "", "Select a song above.", "")
 
     with gr.Blocks(title="YuE2 Music Studio") as app:
         # Client-side style injection & Theme wrapper
@@ -926,6 +1027,19 @@ def create_ui():
                                     cfg_slider = gr.Slider(label="CFG Scale", minimum=1.0, maximum=3.0, value=1.0, step=0.1, scale=4)
 
                                 with gr.Row():
+                                    cover_engine_choice = gr.Dropdown(
+                                        label="🎨 Auto-Generated Album Cover Art Engine",
+                                        choices=[
+                                            ("☁️ Cloud AI Diffusion (Flux/SDXL Quality, 0 MB VRAM)", "cloud"),
+                                            ("🎨 Procedural Graphic Studio (Vinyl Sleeve, Offline, 0 MB VRAM)", "procedural"),
+                                            ("⚡ Local AI Diffusion (SD-Turbo on GPU, Sequenced)", "local"),
+                                            ("🚫 Disabled (No Cover Art)", "none"),
+                                        ],
+                                        value="cloud",
+                                        scale=12,
+                                    )
+
+                                with gr.Row():
                                     generate_song_btn = gr.Button(
                                         "⚡ Generate Song",
                                         variant="primary",
@@ -942,9 +1056,13 @@ def create_ui():
                                     )
 
                             with gr.Group(elem_classes=["depth-card"]):
-                                gr.Markdown("### 🎧 Audio Playback & Output")
-                                audio_output = gr.Audio(label="Rendered FLAC Audio", type="filepath")
-                                status_output = gr.Textbox(label="Status", interactive=False, max_lines=2)
+                                gr.Markdown("### 🎧 Audio Playback & Album Cover")
+                                with gr.Row():
+                                    with gr.Column(scale=5):
+                                        cover_output = gr.Image(label="Vinyl Album Jacket", type="filepath", elem_classes=["cover-art-card"])
+                                    with gr.Column(scale=7):
+                                        audio_output = gr.Audio(label="Rendered FLAC Audio", type="filepath")
+                                        status_output = gr.Textbox(label="Status", interactive=False, max_lines=2)
 
                                 with gr.Accordion("🎼 Symbolic ABC Music Sheet", open=True):
                                     score_display = gr.Code(label="ABC Music Score", language=None, lines=6)
@@ -986,6 +1104,7 @@ V:Chords clef=treble
                                 )
 
                             with gr.Column(scale=5):
+                                reharmonized_cover_output = gr.Image(label="Vinyl Album Jacket", type="filepath", elem_classes=["cover-art-card"])
                                 reharmonized_audio_output = gr.Audio(label="Reharmonized Song Audio", type="filepath")
                                 reharmonized_status = gr.Textbox(label="Status", interactive=False)
                                 reharmonized_meta = gr.Code(label="Receipt", language="json", lines=5)
@@ -1034,15 +1153,29 @@ V:Chords clef=treble
                             refresh_library_btn = gr.Button("🔄 Refresh", scale=2, size="sm", elem_classes=["chip-btn"])
 
                         with gr.Row():
-                            with gr.Column(scale=6):
+                            with gr.Column(scale=5):
+                                library_cover = gr.Image(label="Album Cover Jacket", value=initial_cover, type="filepath", elem_classes=["cover-art-card"])
+                                with gr.Row():
+                                    regen_cover_engine = gr.Dropdown(
+                                        label="Engine",
+                                        choices=[
+                                            ("☁️ Cloud AI", "cloud"),
+                                            ("🎨 Procedural", "procedural"),
+                                            ("⚡ Local AI", "local"),
+                                        ],
+                                        value="cloud",
+                                        scale=7,
+                                    )
+                                    regen_cover_btn = gr.Button("🎨 Regen Cover", scale=5, size="sm", elem_classes=["chip-btn"])
+                            with gr.Column(scale=7):
                                 library_audio = gr.Audio(label="Audio Player", value=initial_audio, type="filepath")
                                 library_details = gr.Markdown(value=initial_details)
                                 with gr.Row():
-                                    load_to_studio_btn = gr.Button("📥 Load this Song into Studio", variant="primary", elem_classes=["btn-3d-primary"])
+                                    load_to_studio_btn = gr.Button("📥 Load into Studio", variant="primary", elem_classes=["btn-3d-primary"])
                                     delete_song_btn = gr.Button("🗑️ Delete Song", variant="secondary")
 
-                            with gr.Column(scale=6):
-                                library_score = gr.Code(label="ABC Music Score", value=initial_score, language=None, lines=10)
+                                with gr.Accordion("🎼 Symbolic ABC Music Sheet", open=False):
+                                    library_score = gr.Code(label="ABC Music Score", value=initial_score, language=None, lines=6)
 
                         with gr.Accordion("📋 All Generated Songs Archive", open=True):
                             library_table = gr.Dataframe(
@@ -1051,6 +1184,7 @@ V:Chords clef=treble
                                 value=get_library_table_data(),
                                 interactive=False,
                             )
+
 
                 # ──────────────────────────────────────────────────────────────
                 # TAB 5: SYSTEM & HARDWARE DOCTOR
@@ -1101,8 +1235,8 @@ V:Chords clef=treble
 
         # Generate Full Song button
         generate_song_btn.click(
-            fn=lambda s, l, c, a, se, cfg, o, t, tp, rp, dev, off: generate_music(
-                s, l, c, a, se, cfg, o, t, tp, rp, "Full Song (Audio + Score)", dev, off
+            fn=lambda s, l, c, a, se, cfg, o, t, tp, rp, dev, off, cov: generate_music(
+                s, l, c, a, se, cfg, o, t, tp, rp, "Full Song (Audio + Score)", dev, off, cov
             ),
             inputs=[
                 style_input,
@@ -1117,9 +1251,11 @@ V:Chords clef=treble
                 rep_slider,
                 device_select,
                 offload_toggle,
+                cover_engine_choice,
             ],
             outputs=[
                 audio_output,
+                cover_output,
                 score_display,
                 reharmonize_score_input,
                 status_output,
@@ -1131,8 +1267,8 @@ V:Chords clef=treble
 
         # Plan Score Only button
         plan_only_btn.click(
-            fn=lambda s, l, c, a, se, cfg, o, t, tp, rp, dev, off: generate_music(
-                s, l, c, a, se, cfg, o, t, tp, rp, "Plan Score Only", dev, off
+            fn=lambda s, l, c, a, se, cfg, o, t, tp, rp, dev, off, cov: generate_music(
+                s, l, c, a, se, cfg, o, t, tp, rp, "Plan Score Only", dev, off, cov
             ),
             inputs=[
                 style_input,
@@ -1147,9 +1283,11 @@ V:Chords clef=treble
                 rep_slider,
                 device_select,
                 offload_toggle,
+                cover_engine_choice,
             ],
             outputs=[
                 audio_output,
+                cover_output,
                 score_display,
                 reharmonize_score_input,
                 status_output,
@@ -1171,9 +1309,11 @@ V:Chords clef=treble
                 ode_steps_choice,
                 device_select,
                 offload_toggle,
+                cover_engine_choice,
             ],
             outputs=[
                 reharmonized_audio_output,
+                reharmonized_cover_output,
                 reharmonized_status,
                 reharmonized_meta,
                 library_table,
@@ -1185,24 +1325,24 @@ V:Chords clef=treble
         library_select.change(
             fn=load_song_from_id,
             inputs=[library_select],
-            outputs=[library_audio, library_score, library_details, library_select],
+            outputs=[library_audio, library_cover, library_score, library_details, library_select],
         )
 
         # Table Row Select updates Dropdown and loads song
         def on_table_select(evt: gr.SelectData, table_data: list):
             if not table_data or evt is None or not hasattr(evt, "index"):
-                return None, "", "", gr.update()
+                return None, None, "", "", gr.update()
             row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
             if row_idx is not None and row_idx < len(table_data):
                 row = table_data[row_idx]
                 folder = row[0]
                 return load_song_from_id(folder)
-            return None, "", "", gr.update()
+            return None, None, "", "", gr.update()
 
         library_table.select(
             fn=on_table_select,
             inputs=[library_table],
-            outputs=[library_audio, library_score, library_details, library_select],
+            outputs=[library_audio, library_cover, library_score, library_details, library_select],
         )
 
         # Refresh Library Button
@@ -1210,12 +1350,12 @@ V:Chords clef=treble
             new_choices = get_library_choices()
             new_rows = get_library_table_data()
             first_val = new_choices[0][1] if new_choices else None
-            audio, score, details, _ = load_song_from_id(first_val) if first_val else (None, "", "No songs found.", "")
-            return gr.update(choices=new_choices, value=first_val), new_rows, audio, score, details
+            audio, cover, score, details, _ = load_song_from_id(first_val) if first_val else (None, None, "", "No songs found.", "")
+            return gr.update(choices=new_choices, value=first_val), new_rows, audio, cover, score, details
 
         refresh_library_btn.click(
             fn=refresh_library,
-            outputs=[library_select, library_table, library_audio, library_score, library_details],
+            outputs=[library_select, library_table, library_audio, library_cover, library_score, library_details],
         )
 
         # Load Selected Song into Studio
@@ -1229,11 +1369,19 @@ V:Chords clef=treble
         delete_song_btn.click(
             fn=delete_selected_song,
             inputs=[library_select],
-            outputs=[library_audio, library_score, library_details, library_select, library_table],
+            outputs=[library_audio, library_cover, library_score, library_details, library_select, library_table],
+        )
+
+        # Regenerate Cover Art Button
+        regen_cover_btn.click(
+            fn=regenerate_cover_art_for_song,
+            inputs=[library_select, regen_cover_engine],
+            outputs=[library_cover],
         )
 
         # Doctor
         doctor_btn.click(fn=run_system_doctor, outputs=[doctor_output])
+
 
     return app
 

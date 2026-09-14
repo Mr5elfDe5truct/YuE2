@@ -66,9 +66,13 @@ The staged Python API exposes `plan()` → `generate_semantic()` → `synthesize
    ```
 2. **Run the One-Click Setup**:
    - Double-click **`setup.bat`** (or run `setup.bat` in CMD/PowerShell).
-   - This automatically locates Python, configures `.venv`, installs PyTorch with CUDA 12.6, and sets up dependencies.
+   - This automatically locates Python, configures `.venv`, installs PyTorch with CUDA 12.6, and sets up all dependencies including Diffusers and Pillow.
 3. **Launch the Studio**:
    - Double-click **`start.bat`** to open the **Gradio Web UI** in your browser at `http://127.0.0.1:7860`.
+4. **🎨 Smart Album Cover Art Studio**:
+   - Every song can auto-generate a customized album cover jacket derived from its musical style and lyrical themes.
+   - Choose between **Cloud AI Diffusion** (Flux/SDXL serverless quality, 0 MB VRAM), **Procedural Graphic Studio** (algorithmic vinyl sleeve, 100% offline, zero VRAM, instant), or **Local AI Diffusion** (SD-Turbo on GPU sequenced post-audio).
+   - Regenerate or change artwork anytime in the **Song Library & History** tab!
 
 ---
 

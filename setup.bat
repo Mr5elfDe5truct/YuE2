@@ -88,12 +88,12 @@ echo.
 :: 3. Install PyTorch with CUDA 12.6 and dependencies
 echo [*] Installing PyTorch with CUDA 12.6 and core dependencies...
 if "%HAS_UV%"=="1" (
-    uv pip install "torch==2.10.0" "transformers==4.57.6" "huggingface-hub" "safetensors==0.7.0" "tiktoken==0.12.0" "numpy==2.2.6" "soundfile==0.13.1" "accelerate==1.13.0" "packaging>=24.2" "gradio>=4.0.0" --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
+    uv pip install "torch==2.10.0" "transformers==4.57.6" "huggingface-hub<1.0" "safetensors==0.7.0" "tiktoken==0.12.0" "numpy==2.2.6" "soundfile==0.13.1" "accelerate==1.13.0" "packaging>=24.2" "gradio>=4.0.0" "diffusers" "pillow" --extra-index-url https://download.pytorch.org/whl/cu126 --index-strategy unsafe-best-match
     uv pip install -e . --no-build-isolation
 ) else (
     ".venv\Scripts\python.exe" -m pip install --upgrade pip
     ".venv\Scripts\pip.exe" install "torch==2.10.0" --extra-index-url https://download.pytorch.org/whl/cu126
-    ".venv\Scripts\pip.exe" install -e ".[ui]"
+    ".venv\Scripts\pip.exe" install -e ".[ui]" "diffusers" "pillow" "huggingface-hub<1.0"
 )
 
 if %ERRORLEVEL% neq 0 (
