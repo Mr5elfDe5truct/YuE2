@@ -13,6 +13,7 @@ import json
 import math
 import os
 from pathlib import Path
+import queue
 import selectors
 import signal
 import subprocess
@@ -71,9 +72,14 @@ def derive_ar_checkpoint(model_dir, cache_dir=None):
     parent.mkdir(parents=True, exist_ok=True)
     target = parent / key
     # Linux is the supported vLLM platform; lock prevents simultaneous writers.
-    import fcntl
+    try:
+        import fcntl
+        has_fcntl = True
+    except ImportError:
+        has_fcntl = False
     with (parent / (key + ".lock")).open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        if has_fcntl:
+            fcntl.flock(lock, fcntl.LOCK_EX)
         if target.exists():
             manifest = json.loads((target / "derivation.json").read_text())
             if manifest.get("identity") != key or manifest.get("source") != source:
@@ -211,13 +217,19 @@ def __getattr__(name):
 
 def _stop_process(process):
     if process.poll() is None:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGTERM)
+        with contextlib.suppress(ProcessLookupError, OSError):
+            if hasattr(os, "killpg"):
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(ProcessLookupError, OSError):
+                if hasattr(os, "killpg"):
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
             process.wait(timeout=10)
 
 
@@ -229,13 +241,22 @@ class _Worker:
         self.log = self.log_path.open("w+")
         env = os.environ.copy()
         env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-        self.process = subprocess.Popen([sys.executable, "-m", "yue2.fast", "--worker"],
-                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
-                         bufsize=0, env=env, start_new_session=True)
+        popen_kwargs = dict(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log,
+                           bufsize=0, env=env)
+        if hasattr(os, "setsid"):
+            popen_kwargs["start_new_session"] = True
+        self.process = subprocess.Popen([sys.executable, "-m", "yue2.fast", "--worker"], **popen_kwargs)
         self.finalizer = weakref.finalize(self, _stop_process, self.process)
-        self.selector = selectors.DefaultSelector()
-        self.selector.register(self.process.stdout, selectors.EVENT_READ)
-        self.buffer = b""
+        self.queue = queue.Queue()
+        self._stopped = False
+        def _reader():
+            while not self._stopped:
+                line = self.process.stdout.readline()
+                if not line:
+                    break
+                self.queue.put(line)
+        self.reader_thread = threading.Thread(target=_reader, daemon=True)
+        self.reader_thread.start()
         self._send({"model_dir": str(pipe.model_dir), "device": str(pipe.device),
                     "memory_budget_gib": pipe.memory_budget_gib})
 
@@ -250,40 +271,38 @@ class _Worker:
                 if cancelled is not None and cancelled():
                     self.close()
                     raise InterruptedError("Cancelled during vLLM AR generation")
-                if self.selector.select(timeout=.1):
-                    block = os.read(self.process.stdout.fileno(), 65536)
-                    if not block:
+                try:
+                    line_bytes = self.queue.get(timeout=0.1)
+                except queue.Empty:
+                    if self.process.poll() is not None:
                         break
-                    self.buffer += block
-                    while b"\n" in self.buffer:
-                        raw, self.buffer = self.buffer.split(b"\n", 1)
-                        line = raw.decode(errors="replace")
-                        if not line.startswith(WIRE):
-                            self.log.write(line + "\n")
-                            continue
-                        event = json.loads(line[len(WIRE):])
-                        if event.get("error"):
-                            self.close()
-                            raise RuntimeError(event["error"])
-                        if event.get("event") == "token" and on_token is not None:
-                            on_token(payload["phase"], event["token"])
-                        if event.get("event") == "result":
-                            return event["ids"], event["timing"], event["truncated"]
-                if self.process.poll() is not None:
-                    break
+                    continue
+                line = line_bytes.decode(errors="replace").rstrip("\r\n")
+                if not line.startswith(WIRE):
+                    self.log.write(line + "\n")
+                    continue
+                event = json.loads(line[len(WIRE):])
+                if event.get("error"):
+                    self.close()
+                    raise RuntimeError(event["error"])
+                if event.get("event") == "token" and on_token is not None:
+                    on_token(payload["phase"], event["token"])
+                if event.get("event") == "result":
+                    return event["ids"], event["timing"], event["truncated"]
             self.log.flush()
             details = self.log_path.read_text(errors="replace")[-12000:]
             self.close()
             raise RuntimeError(f"vLLM worker exited without a result: {details}")
 
     def close(self):
+        self._stopped = True
         _stop_process(self.process)
         self.finalizer.detach()
-        self.selector.close()
         for stream in (self.process.stdin, self.process.stdout, self.log):
             if stream is not None and not stream.closed:
                 stream.close()
-        self.temp.cleanup()
+        with contextlib.suppress(Exception):
+            self.temp.cleanup()
 
 
 def close_vllm(pipe):

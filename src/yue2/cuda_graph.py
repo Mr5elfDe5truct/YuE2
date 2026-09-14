@@ -72,13 +72,24 @@ class GraphAR:
         if attention_backend not in {"auto", "flash", "cudnn", "sdpa"}:
             raise ValueError("attention_backend must be auto, flash, cudnn, or sdpa")
         fused = self.device.type == "cuda" and self.dtype in {torch.bfloat16, torch.float16} and config.head_dim % 8 == 0
-        flash = fused and config.head_dim <= 256 and hasattr(torch.ops.aten, "_flash_attention_forward") and (
-            "seqused_k" in str(torch.ops.aten._flash_attention_forward.default._schema))
+        flash = False
+        if fused and config.head_dim <= 256 and hasattr(torch.ops.aten, "_flash_attention_forward") and (
+            "seqused_k" in str(torch.ops.aten._flash_attention_forward.default._schema)):
+            try:
+                test_q = torch.zeros(1, 1, config.head_dim, device=self.device, dtype=self.dtype)
+                test_cu = torch.tensor([0, 1], device=self.device, dtype=torch.int32)
+                torch.ops.aten._flash_attention_forward(test_q, test_q, test_q, test_cu, test_cu, 1, 1, 0.0, False, False)
+                flash = True
+            except RuntimeError:
+                flash = False
         # Torch 2.10 is pinned by the package. Its native variable-length FA
         # accepts GPU effective lengths; the public masked SDPA can select a
         # much slower math kernel. Keep a cuDNN/public-SDPA fallback explicit.
+        cudnn_supported = fused and torch.backends.cudnn.is_available() and (
+            self.dtype == torch.float16 or (self.device.type == "cuda" and torch.cuda.get_device_capability(self.device) >= (8, 0))
+        )
         if attention_backend == "auto":
-            attention_backend = "flash" if flash else "cudnn" if fused and torch.backends.cudnn.is_available() else "sdpa"
+            attention_backend = "flash" if flash else "cudnn" if cudnn_supported else "sdpa"
         if attention_backend == "flash" and not flash:
             raise ValueError("Pinned PyTorch variable-length CUDA FlashAttention is unavailable")
         if attention_backend == "cudnn" and not (fused and torch.backends.cudnn.is_available()):

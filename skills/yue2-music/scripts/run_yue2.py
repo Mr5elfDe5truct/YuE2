@@ -28,9 +28,9 @@ def request_data(args):
         raise ValueError("Use only one of abc, abc_path or --abc-file")
     abc_path = data.pop("abc_path", None)
     if abc_path is not None:
-        data["abc"] = (Path(args.request).parent / abc_path).read_bytes().decode("utf-8")
+        data["abc"] = (Path(args.request).parent / abc_path).read_bytes().decode("utf-8").replace("\r\n", "\n")
     if args.abc_file:
-        data["abc"] = Path(args.abc_file).read_bytes().decode("utf-8")
+        data["abc"] = Path(args.abc_file).read_bytes().decode("utf-8").replace("\r\n", "\n")
     if args.cot:
         data["cot"] = args.cot
     data.setdefault("cot", "full")

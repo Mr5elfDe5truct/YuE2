@@ -67,7 +67,7 @@ def attention(q, k, v, *, causal=False, backend="sdpa", query_chunk_size=None):
     if query_chunk_size is not None and (isinstance(query_chunk_size, bool) or
                                         not isinstance(query_chunk_size, Integral) or query_chunk_size < 1):
         raise ValueError("query_chunk_size must be a positive integer")
-    block = query_chunk_size or (len(q) if q.device.type == "cuda" and backend != "math" else 256)
+    block = query_chunk_size or (512 if (q.device.type == "cuda" and (len(q) > 512 or backend == "sdpa")) else 256)
     query = q.transpose(0, 1).unsqueeze(0)
     key = k.transpose(0, 1).unsqueeze(0)
     value = v.transpose(0, 1).unsqueeze(0)
@@ -105,8 +105,10 @@ class CachedNAR:
     def __init__(self, model, chunk: Chunk, attention="sdpa", query_chunk_size=None):
         self.model, self.chunk = model, chunk
         self.backend, self.query_chunk_size = attention, query_chunk_size
-        weight = next(model.vae2llm.parameters())
-        self.device, self.dtype = weight.device, weight.dtype
+        target_device = next((p.device for p in model.parameters() if p.device.type != "cpu"), None)
+        if target_device is None:
+            target_device = next(model.parameters()).device
+        self.device, self.dtype = target_device, next(model.parameters()).dtype
         if chunk.noise.ndim != 2 or chunk.noise.shape[1] != 64 or len(chunk.noise) < 1:
             raise ValueError("Expected nonempty acoustic noise [frames,64]")
         if not torch.isfinite(chunk.noise).all():
@@ -122,7 +124,7 @@ class CachedNAR:
         positions = torch.arange(self.ar_length, self.ar_length + self.nar_length, device=self.device)[None]
         self.cos, self.sin = model.model.rotary_emb(positions)
         local = torch.arange(self.nar_length, device=self.device).clamp(max=model.config.max_latent_frames - 1)
-        self.pos_emb = model.latent_pos_embed(local)[None]
+        self.pos_emb = model.latent_pos_embed.to(self.device)(local)[None]
         self.cache = []
         self._prefill()
 
@@ -205,23 +207,50 @@ class CachedNAR:
 @contextmanager
 def _offload_ar(model, enabled):
     """Temporarily move unused AR modules; this model cannot serve concurrently."""
-    modules = [model.model.embed_tokens, model.lm_head]
+    ar_modules = [model.model.embed_tokens, model.lm_head]
     for layer in model.model.layers:
-        modules.extend((layer.input_layernorm, layer.self_attn, layer.post_attention_layernorm, layer.mlp))
-    moved = []
+        ar_modules.extend((layer.input_layernorm, layer.self_attn, layer.post_attention_layernorm, layer.mlp))
+    nar_modules = []
+    if hasattr(model.model, "nar_norm") and model.model.nar_norm is not None:
+        nar_modules.append(model.model.nar_norm)
+    for attr in ("llm2vae", "vae2llm", "time_embedder", "latent_pos_embed"):
+        if hasattr(model, attr) and getattr(model, attr) is not None:
+            nar_modules.append(getattr(model, attr))
+    for layer in model.model.layers:
+        for attr in ("nar_input_layernorm", "nar_self_attn", "nar_pre_mlp_layernorm", "nar_mlp"):
+            if hasattr(layer, attr) and getattr(layer, attr) is not None:
+                nar_modules.append(getattr(layer, attr))
+
+    moved_ar = []
+    moved_nar = []
     try:
         if enabled:
-            for module in modules:
-                device = next(module.parameters()).device
-                if device.type != "cpu":
+            target_device = None
+            for module in ar_modules:
+                p = next(module.parameters(), None)
+                if p is not None and p.device.type != "cpu":
+                    if target_device is None:
+                        target_device = p.device
                     module.to(device="cpu")
-                    moved.append((module, device))
+                    moved_ar.append((module, p.device))
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            if target_device is not None:
+                for module in nar_modules:
+                    dev = next((t.device for t in list(module.parameters()) + list(module.buffers())), None)
+                    if dev is None or dev != target_device:
+                        orig = dev if dev is not None else torch.device("cpu")
+                        module.to(device=target_device)
+                        moved_nar.append((module, orig))
         yield
     finally:
-        for module, device in moved:
-            module.to(device=device)
+        if enabled:
+            for module, orig_device in moved_nar:
+                module.to(device=orig_device)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            for module, device in moved_ar:
+                module.to(device=device)
 
 
 @torch.inference_mode()

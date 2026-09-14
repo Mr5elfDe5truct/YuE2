@@ -57,6 +57,23 @@ The staged Python API exposes `plan()` → `generate_semantic()` → `synthesize
 
 ## Quick start
 
+### 🪟 Windows One-Click Quick Start
+
+1. **Clone this repository**:
+   ```cmd
+   git clone https://github.com/Mr5elfDe5truct/YuE2.git
+   cd YuE2
+   ```
+2. **Run the One-Click Setup**:
+   - Double-click **`setup.bat`** (or run `setup.bat` in CMD/PowerShell).
+   - This automatically locates Python, configures `.venv`, installs PyTorch with CUDA 12.6, and sets up dependencies.
+3. **Launch the Studio**:
+   - Double-click **`start.bat`** to open the **Gradio Web UI** in your browser at `http://127.0.0.1:7860`.
+
+---
+
+### 🐧 Linux / Standard Setup
+
 **Linux · Python 3.12 · NVIDIA GPU with BF16 support and 24 GB VRAM.** YuE2 produces 48 kHz stereo audio without quantization. Model files download from Hugging Face on first use.
 
 ```bash

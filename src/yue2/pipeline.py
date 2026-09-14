@@ -118,6 +118,25 @@ class SongResult:
         return result
 
 
+def _get_ar_modules(model):
+    modules = [model.model.embed_tokens, model.model.norm, model.lm_head]
+    for layer in model.model.layers:
+        modules.extend((layer.input_layernorm, layer.self_attn, layer.post_attention_layernorm, layer.mlp))
+    return modules
+
+
+def _get_nar_modules(model):
+    modules = []
+    if hasattr(model.model, "nar_norm") and model.model.nar_norm is not None:
+        modules.append(model.model.nar_norm)
+    for attr in ("llm2vae", "vae2llm", "time_embedder", "latent_pos_embed"):
+        if hasattr(model, attr) and getattr(model, attr) is not None:
+            modules.append(getattr(model, attr))
+    for layer in model.model.layers:
+        modules.extend((layer.nar_input_layernorm, layer.nar_self_attn, layer.nar_pre_mlp_layernorm, layer.nar_mlp))
+    return modules
+
+
 class YuE2Pipeline:
     def __init__(self, model_dir, vae_dir, *, device="auto", memory_budget_gib=24,
                  backend="torch", generation_config=None, verify_hashes=True,
@@ -159,10 +178,12 @@ class YuE2Pipeline:
             if not torch.cuda.is_bf16_supported():
                 raise RuntimeError("The unquantized preset requires CUDA BF16 support")
             total = torch.cuda.get_device_properties(self.device).total_memory
-            budget = min((self.memory_budget_gib - 2) * 2**30, total - 2 * 2**30)
+            reserve = 2 * 2**30 if total > 10 * 2**30 else 0.5 * 2**30
+            budget = min((self.memory_budget_gib - 2) * 2**30 if self.memory_budget_gib > 4 else self.memory_budget_gib * 2**30, total - reserve)
             if budget <= 0:
-                raise ValueError("Memory budget must leave room for a 2GiB reserve")
-            torch.cuda.set_per_process_memory_fraction(min(budget / total, 1), self.device)
+                budget = total - reserve
+            fraction = min(max(budget / total, 0.1), 1.0)
+            torch.cuda.set_per_process_memory_fraction(fraction, self.device)
 
     @classmethod
     def from_pretrained(cls, model="m-a-p/YuE2-3B", *, vae="m-a-p/YuE2-Vae",
@@ -208,7 +229,9 @@ class YuE2Pipeline:
                    "generation_config": self.generation_config.to_dict(), "source_weights": self.weights})
 
     def _load_model(self, for_nar=False):
-        loading = self._model is None or next(self._model.parameters()).device != self.device
+        current_phase = "nar" if for_nar else "ar"
+        phase_change = getattr(self, "_current_phase", None) != current_phase
+        loading = self._model is None or (not self.offload_ar and next(self._model.parameters()).device != self.device) or phase_change
         with self._status("Loading model") if loading else nullcontext():
             if self._model is None:
                 from .modeling_yue2 import YuE2ForCausalLM
@@ -219,7 +242,28 @@ class YuE2Pipeline:
             if self.quantization == "fp8" and not for_nar:
                 from .quantization import prepare_fp8_ar
                 prepare_fp8_ar(self._model, self.device)
-            self._model.to(self.device)
+            if self.offload_ar and self.device.type == "cuda":
+                for m in _get_nar_modules(self._model):
+                    m.to("cpu")
+                for m in _get_ar_modules(self._model):
+                    m.to(self.device)
+                if hasattr(self._model.model, "norm") and self._model.model.norm is not None:
+                    self._model.model.norm.to(self.device)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                self._current_phase = current_phase
+            else:
+                try:
+                    self._model.to(self.device)
+                except torch.cuda.OutOfMemoryError as oom:
+                    if self.device.type == "cuda":
+                        torch.cuda.empty_cache()
+                        total_gib = torch.cuda.get_device_properties(self.device).total_memory / 2**30
+                        raise RuntimeError(
+                            f"CUDA Out of Memory loading model onto {torch.cuda.get_device_name(self.device)} "
+                            f"({total_gib:.1f} GiB total VRAM). The unquantized 3B model requires ~7.3 GiB VRAM + KV cache. "
+                            f"Please run with offload_ar=True or --device cpu."
+                        ) from oom
         return self._model
 
     def _request(self, style=None, lyrics=None, *, tags=None, **kwargs):
