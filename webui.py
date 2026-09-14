@@ -3,11 +3,11 @@
 Features:
 - 3D depth shadows, neumorphic bevels, and layered glassmorphism cards.
 - 4 User-selectable themes: Cyberpunk Neon, Midnight Studio, Synthwave Sunset, and Modern Emerald.
-- Interactive style prompt composer with clickable category chips (Genres, Vocals, Instruments, Moods, BPM).
+- Interactive style prompt composer with glowing clickable category chips (Genres, Vocals, Instruments, Moods, BPM).
 - Lyrics structure builder (+ [Intro], + [Verse], + [Chorus], etc.).
 - Reharmonization & Score Editing: Edit ABC chords/melodies and synthesize directly from the score.
 - Full model controls: ODE steps (4/8/16/32), CFG guidance (1.0-3.0), temperature, top-p, and repetition penalty.
-- Song Library & History explorer to preview, listen, and reload past generations from outputs/.
+- Song Library & History explorer to preview, listen, delete, and reload past generations from outputs/.
 - Live Hardware Doctor & VRAM monitor.
 """
 from __future__ import annotations
@@ -17,6 +17,7 @@ import datetime
 import json
 import os
 import random
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -80,15 +81,15 @@ def load_pipeline(device: str = "auto", offload_ar: bool = True) -> YuE2Pipeline
 
 # Curated Studio Presets
 PRESETS = {
-    "City Lights (Warm Piano Pop)": {
-        "style": "English, warm piano pop, expressive female voice, acoustic piano, rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM",
-        "lyrics": "[Verse]\nNeon fades along the lane\nFootsteps keep the time of rain\nFold the night and leave it here\nMorning has a sky to clear\n\n[Chorus]\nLet the day come into view\nEvery road begins with you\nHold a little room for light\nWe will sing beyond the night",
-        "cot": "full",
-        "ode_steps": 16,
-    },
     "Neon Highway (80s Retrowave / Synthwave)": {
         "style": "English, 80s synthwave, energetic male vocals, analog synthesizer arpeggios, driving punchy drums, gated reverb snare, deep synth bassline, 122 BPM",
         "lyrics": "[Intro]\n(Synth arpeggio sweeps into punchy drums)\n\n[Verse 1]\nStreets of chrome beneath the headlights\nChasing shadows into midnight\nEngine humming like a heartbeat\nLeaving all the ghosts behind me\n\n[Chorus]\nRunning down the neon highway\nNothing in the world can stop us now\nElectric skies are burning sideways\nWe will never let the fire out",
+        "cot": "full",
+        "ode_steps": 16,
+    },
+    "City Lights (Warm Piano Pop)": {
+        "style": "English, warm piano pop, expressive female voice, acoustic piano, rounded bass and light drums, lyrical memorable melody, unhurried phrasing, 88 BPM",
+        "lyrics": "[Verse]\nNeon fades along the lane\nFootsteps keep the time of rain\nFold the night and leave it here\nMorning has a sky to clear\n\n[Chorus]\nLet the day come into view\nEvery road begins with you\nHold a little room for light\nWe will sing beyond the night",
         "cot": "full",
         "ode_steps": 16,
     },
@@ -112,12 +113,59 @@ PRESETS = {
     },
 }
 
-# Tag Palette options
-GENRE_TAGS = ["Synthwave", "Contemporary Pop", "Lo-Fi Chill Hop", "Acoustic Pop", "R&B Soul", "Indie Rock", "Cyberpunk EDM", "Cinematic Orchestral", "80s Rock", "Funk Groove"]
-VOCAL_TAGS = ["Warm Female Vocal", "Airy Ethereal Female", "Soulful Male Vocal", "Gritty Rock Male", "Vocal Duet", "Dreamy Choir", "Instrumental (No Vocals)"]
-INSTRUMENT_TAGS = ["Grand Piano", "Acoustic Guitar", "Electric Guitar Solo", "Warm 808 Bass", "Analog Synth", "Tenor Saxophone", "Brushed Drums", "Punchy Drums", "Orchestral Strings"]
-MOOD_TAGS = ["Uplifting & Inspiring", "Melancholic & Moody", "Relaxed & Chill", "Energetic & Driving", "Nostalgic 80s", "Dark & Atmospheric", "Romantic & Tender"]
-BPM_PRESETS = ["75 BPM", "88 BPM", "96 BPM", "110 BPM", "122 BPM", "138 BPM"]
+# Tag Palette options with musical icons (display label -> raw tag)
+GENRE_TAGS = [
+    ("🌆 Synthwave", "Synthwave"),
+    ("☕ Piano Pop", "Contemporary Pop"),
+    ("📻 Lo-Fi Chill", "Lo-Fi Chill Hop"),
+    ("🎸 Acoustic Pop", "Acoustic Pop"),
+    ("🏙️ R&B Soul", "R&B Soul"),
+    ("⚡ Cyberpunk EDM", "Cyberpunk EDM"),
+    ("🎬 Cinematic", "Cinematic Orchestral"),
+    ("🕶️ 80s Rock", "80s Rock"),
+    ("🕺 Funk Groove", "Funk Groove"),
+]
+
+VOCAL_TAGS = [
+    ("🎤 Warm Female", "Warm Female Vocal"),
+    ("✨ Airy Ethereal", "Airy Ethereal Female"),
+    ("🎙️ Soulful Male", "Soulful Male Vocal"),
+    ("⚡ Rock Male", "Gritty Rock Male"),
+    ("👥 Vocal Duet", "Vocal Duet"),
+    ("🌌 Dreamy Choir", "Dreamy Choir"),
+    ("🎧 Instrumental", "Instrumental (No Vocals)"),
+]
+
+INSTRUMENT_TAGS = [
+    ("🎹 Grand Piano", "Grand Piano"),
+    ("🎸 Acoustic Guitar", "Acoustic Guitar"),
+    ("⚡ Electric Guitar", "Electric Guitar Solo"),
+    ("🔊 808 Bass", "Warm 808 Bass"),
+    ("🎛️ Analog Synth", "Analog Synth"),
+    ("🎷 Tenor Sax", "Tenor Saxophone"),
+    ("🥁 Brushed Drums", "Brushed Drums"),
+    ("💥 Punchy Drums", "Punchy Live Drums"),
+    ("🎻 Strings", "Orchestral Strings"),
+]
+
+MOOD_TAGS = [
+    ("🌟 Uplifting", "Uplifting & Inspiring"),
+    ("🌧️ Melancholic", "Melancholic & Moody"),
+    ("☕ Chill & Relaxed", "Relaxed & Chill"),
+    ("⚡ Energetic", "Energetic & Driving"),
+    ("📼 Nostalgic 80s", "Nostalgic 80s"),
+    ("🌑 Atmospheric", "Dark & Atmospheric"),
+    ("💖 Romantic", "Romantic & Tender"),
+]
+
+BPM_PRESETS = [
+    ("⏱️ 75 BPM", "75 BPM"),
+    ("⏱️ 88 BPM", "88 BPM"),
+    ("⏱️ 96 BPM", "96 BPM"),
+    ("⏱️ 110 BPM", "110 BPM"),
+    ("⏱️ 122 BPM", "122 BPM"),
+    ("⏱️ 138 BPM", "138 BPM"),
+]
 
 
 def add_style_tag(current_style: str, tag: str) -> str:
@@ -213,9 +261,10 @@ def generate_music(
                 None,  # No audio yet
                 score_text,
                 score_text,  # also update the Reharmonization editor
-                f"✅ Score plan generated successfully! Output: {output_dir.name}",
+                f"✅ Score plan generated successfully! Saved to: {output_dir.name}",
                 json.dumps(summary, indent=2),
-                scan_song_library(),
+                get_library_table_data(),
+                gr.update(choices=get_library_choices()),
             )
         else:
             progress(0.2, desc="Planning score & tokens...")
@@ -244,7 +293,8 @@ def generate_music(
                 score_text,  # also update Reharmonization tab
                 status_msg,
                 json.dumps(summary, indent=2),
-                scan_song_library(),
+                get_library_table_data(),
+                gr.update(choices=get_library_choices()),
             )
     except Exception as exc:
         raise gr.Error(f"Generation error: {str(exc)}")
@@ -306,75 +356,82 @@ def synthesize_from_score(
             audio_path,
             f"✨ Successfully synthesized audio from custom score! ({duration_s}s)",
             json.dumps(summary, indent=2),
-            scan_song_library(),
+            get_library_table_data(),
+            gr.update(choices=get_library_choices()),
         )
     except Exception as exc:
         raise gr.Error(f"Synthesis failed: {str(exc)}")
 
 
-def scan_song_library():
+# ══════════════════════════════════════════════════════════════════════════════
+# SONG LIBRARY HELPERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def get_library_choices() -> list[tuple[str, str]]:
     outputs_dir = Path("outputs")
     if not outputs_dir.exists():
         return []
-
-    entries = []
+    choices = []
     for item in sorted(outputs_dir.iterdir(), reverse=True):
-        if not item.is_dir():
+        if not item.is_dir() or not (item / "audio.flac").exists():
             continue
-        audio_file = item / "audio.flac"
-        if not audio_file.exists():
-            continue
-
-        title = item.name
         req_file = item / "request.json"
         res_file = item / "result.json"
-
-        style_snippet = "No style prompt"
-        duration_str = "--:--"
-        seed_str = "-"
-
-        if req_file.exists():
-            try:
-                req_data = json.loads(req_file.read_text(encoding="utf-8"))
-                style_snippet = req_data.get("style", "")[:60] + "..."
-                seed_str = str(req_data.get("seed", "-"))
-            except Exception:
-                pass
-
+        dur = ""
+        snippet = ""
         if res_file.exists():
             try:
-                res_data = json.loads(res_file.read_text(encoding="utf-8"))
-                secs = float(res_data.get("audio_seconds", 0))
-                mins = int(secs // 60)
-                rem = int(secs % 60)
-                duration_str = f"{mins}:{rem:02d}"
+                s = float(json.loads(res_file.read_text(encoding="utf-8")).get("audio_seconds", 0))
+                dur = f" ({int(s // 60)}:{int(s % 60):02d})"
             except Exception:
                 pass
+        if req_file.exists():
+            try:
+                st = json.loads(req_file.read_text(encoding="utf-8")).get("style", "")
+                snippet = " • " + st[:35] + "..." if st else ""
+            except Exception:
+                pass
+        label = f"{item.name}{dur}{snippet}"
+        choices.append((label, item.name))
+    return choices
 
+
+def get_library_table_data() -> list[list[str]]:
+    outputs_dir = Path("outputs")
+    if not outputs_dir.exists():
+        return []
+    rows = []
+    for item in sorted(outputs_dir.iterdir(), reverse=True):
+        if not item.is_dir() or not (item / "audio.flac").exists():
+            continue
         mtime = datetime.datetime.fromtimestamp(item.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-        entries.append({
-            "Folder": item.name,
-            "Created": mtime,
-            "Duration": duration_str,
-            "Seed": seed_str,
-            "Style": style_snippet,
-            "Path": str(audio_file),
-        })
+        req_file = item / "request.json"
+        res_file = item / "result.json"
+        dur = "--:--"
+        seed = "-"
+        snippet = "No prompt"
+        if res_file.exists():
+            try:
+                s = float(json.loads(res_file.read_text(encoding="utf-8")).get("audio_seconds", 0))
+                dur = f"{int(s // 60)}:{int(s % 60):02d}"
+            except Exception:
+                pass
+        if req_file.exists():
+            try:
+                d = json.loads(req_file.read_text(encoding="utf-8"))
+                seed = str(d.get("seed", "-"))
+                snippet = d.get("style", "")[:55]
+            except Exception:
+                pass
+        rows.append([item.name, mtime, dur, seed, snippet])
+    return rows
 
-    return entries
 
-
-def select_library_song(evt: gr.SelectData, table_data: list):
-    if not table_data:
-        return None, "", ""
-    idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
-    if idx is None or idx >= len(table_data):
-        return None, "", ""
-    row = table_data[idx]
-    folder_name = row["Folder"] if isinstance(row, dict) else row[0]
+def load_song_from_id(folder_name: str):
+    if not folder_name:
+        return None, "", "Select a song from the library above.", ""
     folder_path = Path("outputs") / folder_name
-    audio_path = str(folder_path / "audio.flac")
-
+    audio_path = str(folder_path / "audio.flac") if (folder_path / "audio.flac").exists() else None
     score_text = ""
     score_file = folder_path / "score.abc"
     if score_file.exists():
@@ -383,25 +440,30 @@ def select_library_song(evt: gr.SelectData, table_data: list):
         except Exception:
             pass
 
-    info_text = ""
+    details_md = f"### 🎵 Song: `{folder_name}`\n"
+    req_file = folder_path / "request.json"
     res_file = folder_path / "result.json"
+    if req_file.exists():
+        try:
+            req = json.loads(req_file.read_text(encoding="utf-8"))
+            details_md += f"- **Style**: `{req.get('style', '')}`\n"
+            details_md += f"- **Seed**: `{req.get('seed', '')}` | **CoT Mode**: `{req.get('cot', '')}`\n"
+            details_md += f"- **Lyrics Preview**:\n```\n{req.get('lyrics', '')[:250]}...\n```\n"
+        except Exception:
+            pass
     if res_file.exists():
         try:
-            info_text = res_file.read_text(encoding="utf-8")
+            res = json.loads(res_file.read_text(encoding="utf-8"))
+            details_md += f"- **Duration**: {res.get('audio_seconds', 0):.2f}s | **Sample Rate**: {res.get('sample_rate', 48000)} Hz\n"
         except Exception:
             pass
 
-    return audio_path, score_text, info_text
+    return audio_path, score_text, details_md, folder_name
 
 
-def load_song_to_studio(evt: gr.SelectData, table_data: list):
-    if not table_data:
-        return gr.update(), gr.update(), gr.update()
-    idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
-    if idx is None or idx >= len(table_data):
-        return gr.update(), gr.update(), gr.update()
-    row = table_data[idx]
-    folder_name = row["Folder"] if isinstance(row, dict) else row[0]
+def load_selected_song_into_studio(folder_name: str):
+    if not folder_name:
+        raise gr.Error("No song selected to load into studio.")
     folder_path = Path("outputs") / folder_name
     req_file = folder_path / "request.json"
     score_file = folder_path / "score.abc"
@@ -424,7 +486,22 @@ def load_song_to_studio(evt: gr.SelectData, table_data: list):
         except Exception:
             pass
 
+    gr.Info(f"Loaded '{folder_name}' into Composition Studio and Reharmonize tabs!")
     return style, lyrics, score
+
+
+def delete_selected_song(folder_name: str):
+    if not folder_name:
+        raise gr.Error("No song selected to delete.")
+    folder_path = Path("outputs") / folder_name
+    if folder_path.exists() and folder_path.is_dir():
+        shutil.rmtree(folder_path)
+    new_choices = get_library_choices()
+    new_rows = get_library_table_data()
+    first_choice = new_choices[0][1] if new_choices else None
+    audio, score, details, _ = load_song_from_id(first_choice) if first_choice else (None, "", "No songs left.", "")
+    gr.Info(f"Deleted '{folder_name}' from library.")
+    return audio, score, details, gr.update(choices=new_choices, value=first_choice), new_rows
 
 
 def run_system_doctor():
@@ -449,88 +526,91 @@ def run_system_doctor():
 # ══════════════════════════════════════════════════════════════════════════════
 
 STUDIO_CSS = """
-/* Root Studio Themes & CSS Variables */
-:root {
-  --studio-bg: #090b12;
-  --studio-card: rgba(16, 20, 30, 0.85);
-  --studio-card-border: rgba(0, 243, 255, 0.22);
-  --studio-primary: #00f3ff;
-  --studio-secondary: #ff007f;
-  --studio-accent: #a855f7;
-  --studio-glow: rgba(0, 243, 255, 0.35);
-  --studio-btn-text: #05070c;
-  --studio-text: #e2e8f0;
-  --studio-muted: #94a3b8;
-  --studio-shadow-depth: 0 16px 36px -8px rgba(0, 0, 0, 0.75), 0 0 24px rgba(0, 243, 255, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-  --studio-btn-depth: 0 6px 20px rgba(0, 243, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.35);
-}
-
-.theme-cyberpunk {
+/* Theme 1: Cyberpunk Neon */
+body.theme-cyberpunk, .gradio-container.theme-cyberpunk, #studio-wrapper.theme-cyberpunk {
   --studio-bg: #07090e;
-  --studio-card: rgba(14, 18, 28, 0.9);
-  --studio-card-border: rgba(0, 243, 255, 0.25);
+  --studio-card: rgba(14, 18, 28, 0.95);
+  --studio-card-border: rgba(0, 243, 255, 0.3);
   --studio-primary: #00f3ff;
   --studio-secondary: #ff007f;
   --studio-accent: #b026ff;
-  --studio-glow: rgba(0, 243, 255, 0.4);
+  --studio-glow: rgba(0, 243, 255, 0.45);
+  --studio-tag-bg: rgba(0, 243, 255, 0.08);
+  --studio-tag-border: rgba(0, 243, 255, 0.35);
+  --studio-tag-hover: #00f3ff;
   --studio-btn-text: #05070c;
   --studio-shadow-depth: 0 18px 40px -8px rgba(0, 0, 0, 0.8), 0 0 25px rgba(0, 243, 255, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.15);
   --studio-btn-depth: 0 6px 22px rgba(0, 243, 255, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
-.theme-midnight {
+/* Theme 2: Midnight Studio */
+body.theme-midnight, .gradio-container.theme-midnight, #studio-wrapper.theme-midnight {
   --studio-bg: #0a0b0e;
-  --studio-card: rgba(20, 22, 28, 0.9);
-  --studio-card-border: rgba(245, 158, 11, 0.28);
+  --studio-card: rgba(20, 22, 28, 0.95);
+  --studio-card-border: rgba(245, 158, 11, 0.35);
   --studio-primary: #f59e0b;
   --studio-secondary: #fbbf24;
   --studio-accent: #d97706;
-  --studio-glow: rgba(245, 158, 11, 0.35);
+  --studio-glow: rgba(245, 158, 11, 0.45);
+  --studio-tag-bg: rgba(245, 158, 11, 0.08);
+  --studio-tag-border: rgba(245, 158, 11, 0.35);
+  --studio-tag-hover: #f59e0b;
   --studio-btn-text: #0b0c10;
   --studio-shadow-depth: 0 18px 40px -8px rgba(0, 0, 0, 0.8), 0 0 25px rgba(245, 158, 11, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.12);
   --studio-btn-depth: 0 6px 22px rgba(245, 158, 11, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
-.theme-synthwave {
+/* Theme 3: Synthwave Sunset */
+body.theme-synthwave, .gradio-container.theme-synthwave, #studio-wrapper.theme-synthwave {
   --studio-bg: #0c0818;
-  --studio-card: rgba(24, 18, 44, 0.88);
-  --studio-card-border: rgba(244, 63, 94, 0.28);
+  --studio-card: rgba(24, 18, 44, 0.95);
+  --studio-card-border: rgba(244, 63, 94, 0.35);
   --studio-primary: #f43f5e;
   --studio-secondary: #8b5cf6;
   --studio-accent: #ec4899;
-  --studio-glow: rgba(244, 63, 94, 0.38);
+  --studio-glow: rgba(244, 63, 94, 0.45);
+  --studio-tag-bg: rgba(244, 63, 94, 0.08);
+  --studio-tag-border: rgba(244, 63, 94, 0.35);
+  --studio-tag-hover: #f43f5e;
   --studio-btn-text: #0e071a;
   --studio-shadow-depth: 0 18px 40px -8px rgba(0, 0, 0, 0.8), 0 0 25px rgba(244, 63, 94, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.15);
   --studio-btn-depth: 0 6px 22px rgba(244, 63, 94, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
-.theme-emerald {
+/* Theme 4: Modern Emerald */
+body.theme-emerald, .gradio-container.theme-emerald, #studio-wrapper.theme-emerald {
   --studio-bg: #060e0c;
-  --studio-card: rgba(12, 26, 22, 0.88);
-  --studio-card-border: rgba(16, 185, 129, 0.28);
+  --studio-card: rgba(12, 26, 22, 0.95);
+  --studio-card-border: rgba(16, 185, 129, 0.35);
   --studio-primary: #10b981;
   --studio-secondary: #06b6d4;
   --studio-accent: #34d399;
-  --studio-glow: rgba(16, 185, 129, 0.35);
+  --studio-glow: rgba(16, 185, 129, 0.45);
+  --studio-tag-bg: rgba(16, 185, 129, 0.08);
+  --studio-tag-border: rgba(16, 185, 129, 0.35);
+  --studio-tag-hover: #10b981;
   --studio-btn-text: #04120e;
   --studio-shadow-depth: 0 18px 40px -8px rgba(0, 0, 0, 0.8), 0 0 25px rgba(16, 185, 129, 0.15), inset 0 1px 0 rgba(255, 255, 255, 0.15);
   --studio-btn-depth: 0 6px 22px rgba(16, 185, 129, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
-/* Studio Global Container */
+/* Base Container */
+body, .gradio-container, #studio-wrapper {
+  background: var(--studio-bg, #07090e) !important;
+  color: #e2e8f0 !important;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
 #studio-wrapper {
-  background: var(--studio-bg);
   min-height: 100vh;
   padding: 1rem;
-  color: var(--studio-text);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  transition: all 0.3s ease;
 }
 
 /* 3D Depth Card Containers */
 .depth-card {
-  background: var(--studio-card) !important;
-  border: 1px solid var(--studio-card-border) !important;
+  background: var(--studio-card, rgba(14, 18, 28, 0.95)) !important;
+  border: 1px solid var(--studio-card-border, rgba(0, 243, 255, 0.3)) !important;
   border-radius: 16px !important;
   box-shadow: var(--studio-shadow-depth) !important;
   backdrop-filter: blur(16px) !important;
@@ -540,13 +620,13 @@ STUDIO_CSS = """
 }
 
 .depth-card:hover {
-  border-color: var(--studio-primary) !important;
+  border-color: var(--studio-primary, #00f3ff) !important;
 }
 
 /* 3D Tactile Buttons */
 .btn-3d-primary {
-  background: linear-gradient(135deg, var(--studio-primary), var(--studio-secondary)) !important;
-  color: var(--studio-btn-text) !important;
+  background: linear-gradient(135deg, var(--studio-primary, #00f3ff), var(--studio-secondary, #ff007f)) !important;
+  color: var(--studio-btn-text, #05070c) !important;
   font-weight: 700 !important;
   font-size: 1.05rem !important;
   border: none !important;
@@ -558,7 +638,7 @@ STUDIO_CSS = """
 
 .btn-3d-primary:hover {
   transform: translateY(-2px) !important;
-  filter: brightness(1.12) !important;
+  filter: brightness(1.15) !important;
   box-shadow: 0 10px 28px var(--studio-glow) !important;
 }
 
@@ -568,9 +648,9 @@ STUDIO_CSS = """
 }
 
 .btn-3d-secondary {
-  background: rgba(255, 255, 255, 0.07) !important;
-  color: var(--studio-text) !important;
-  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #f1f5f9 !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
   border-radius: 12px !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
   font-weight: 600 !important;
@@ -578,31 +658,56 @@ STUDIO_CSS = """
 }
 
 .btn-3d-secondary:hover {
-  border-color: var(--studio-primary) !important;
-  color: var(--studio-primary) !important;
+  border-color: var(--studio-primary, #00f3ff) !important;
+  color: var(--studio-primary, #00f3ff) !important;
   transform: translateY(-1px) !important;
 }
 
-/* Chip Tag Palette */
+/* Glowing Chip Tag Buttons */
 .chip-btn {
-  background: rgba(255, 255, 255, 0.05) !important;
-  border: 1px solid rgba(255, 255, 255, 0.12) !important;
-  border-radius: 20px !important;
-  font-size: 0.8rem !important;
-  font-weight: 500 !important;
-  padding: 0.25rem 0.65rem !important;
-  color: var(--studio-muted) !important;
+  background: var(--studio-tag-bg, rgba(0, 243, 255, 0.08)) !important;
+  border: 1px solid var(--studio-tag-border, rgba(0, 243, 255, 0.35)) !important;
+  border-radius: 24px !important;
+  font-size: 0.84rem !important;
+  font-weight: 600 !important;
+  padding: 0.3rem 0.75rem !important;
+  color: #f1f5f9 !important;
   cursor: pointer !important;
-  transition: all 0.15s ease !important;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3) !important;
+  transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1) !important;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
 }
 
 .chip-btn:hover {
-  background: var(--studio-primary) !important;
-  color: var(--studio-btn-text) !important;
-  border-color: var(--studio-primary) !important;
+  background: var(--studio-primary, #00f3ff) !important;
+  color: var(--studio-btn-text, #05070c) !important;
+  border-color: var(--studio-primary, #00f3ff) !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 6px 16px var(--studio-glow) !important;
+}
+
+.chip-btn:active {
+  transform: translateY(1px) !important;
+}
+
+/* Lyric Section Tag Buttons */
+.lyric-chip-btn {
+  background: rgba(168, 85, 247, 0.12) !important;
+  border: 1px solid rgba(168, 85, 247, 0.4) !important;
+  border-radius: 20px !important;
+  font-size: 0.8rem !important;
+  font-weight: 600 !important;
+  padding: 0.25rem 0.65rem !important;
+  color: #e9d5ff !important;
+  cursor: pointer !important;
+  transition: all 0.15s ease !important;
+}
+
+.lyric-chip-btn:hover {
+  background: #a855f7 !important;
+  color: #ffffff !important;
+  border-color: #a855f7 !important;
   transform: translateY(-1px) !important;
-  box-shadow: 0 4px 12px var(--studio-glow) !important;
+  box-shadow: 0 4px 14px rgba(168, 85, 247, 0.4) !important;
 }
 
 /* Header & Status Banner */
@@ -611,7 +716,7 @@ STUDIO_CSS = """
   justify-content: space-between;
   align-items: center;
   padding: 0.5rem 0 1.25rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   margin-bottom: 1.25rem;
 }
 
@@ -619,25 +724,25 @@ STUDIO_CSS = """
   font-size: 2.2rem;
   font-weight: 800;
   letter-spacing: -0.5px;
-  background: linear-gradient(135deg, var(--studio-primary), var(--studio-secondary));
+  background: linear-gradient(135deg, var(--studio-primary, #00f3ff), var(--studio-secondary, #ff007f));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   margin: 0;
 }
 
 .studio-title p {
-  color: var(--studio-muted);
+  color: #94a3b8;
   font-size: 0.95rem;
   margin: 0.2rem 0 0 0;
 }
 
 .hardware-pill {
   background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 30px;
   padding: 0.4rem 1rem;
   font-size: 0.85rem;
-  color: var(--studio-muted);
+  color: #cbd5e1;
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -657,28 +762,37 @@ STUDIO_CSS = """
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.8px;
-  color: var(--studio-primary);
-  margin: 0.4rem 0 0.2rem 0;
+  color: var(--studio-primary, #00f3ff);
+  margin: 0.5rem 0 0.25rem 0;
 }
 """
 
 
 def create_ui():
+    initial_library_choices = get_library_choices()
+    initial_choice = initial_library_choices[0][1] if initial_library_choices else None
+    initial_audio, initial_score, initial_details, _ = load_song_from_id(initial_choice) if initial_choice else (None, "", "Select a song above.", "")
+
     with gr.Blocks(title="YuE2 Music Studio") as app:
+        # Client-side style injection & Theme wrapper
         gr.HTML(f"""
         <style>{STUDIO_CSS}</style>
         <script>
         function setStudioTheme(themeName) {{
-            const wrapper = document.getElementById('studio-wrapper');
-            if (wrapper) {{
-                wrapper.className = 'theme-' + themeName.toLowerCase().split(' ')[0];
-            }}
+            const themeClass = 'theme-' + themeName.toLowerCase().split(' ')[0];
+            const classes = ['theme-cyberpunk', 'theme-midnight', 'theme-synthwave', 'theme-emerald'];
+            [document.body, document.querySelector('.gradio-container'), document.getElementById('studio-wrapper')].forEach(el => {{
+                if (el) {{
+                    classes.forEach(c => el.classList.remove(c));
+                    el.classList.add(themeClass);
+                }}
+            }});
         }}
         </script>
         """)
 
         with gr.Column(elem_id="studio-wrapper", elem_classes=["theme-cyberpunk"]):
-            # Header
+            # Studio Header
             with gr.Row(elem_classes=["studio-header"]):
                 with gr.Column(scale=8):
                     gr.HTML(f"""
@@ -702,7 +816,9 @@ def create_ui():
                     """)
 
             with gr.Tabs():
+                # ──────────────────────────────────────────────────────────────
                 # TAB 1: STUDIO COMPOSITION
+                # ──────────────────────────────────────────────────────────────
                 with gr.TabItem("🎛️ Composition Studio"):
                     with gr.Row():
                         with gr.Column(scale=6):
@@ -726,38 +842,38 @@ def create_ui():
                                 with gr.Accordion("🏷️ Interactive Style Tag Palette (Click to add)", open=True):
                                     gr.HTML('<div class="tag-section-title">Genre & Sound</div>')
                                     with gr.Row():
-                                        for tag in GENRE_TAGS[:5]:
-                                            b = gr.Button(tag, size="sm", elem_classes=["chip-btn"])
+                                        for label, tag in GENRE_TAGS[:5]:
+                                            b = gr.Button(label, size="sm", elem_classes=["chip-btn"])
                                             b.click(fn=add_style_tag, inputs=[style_input, gr.State(tag)], outputs=style_input)
                                     with gr.Row():
-                                        for tag in GENRE_TAGS[5:]:
-                                            b = gr.Button(tag, size="sm", elem_classes=["chip-btn"])
+                                        for label, tag in GENRE_TAGS[5:]:
+                                            b = gr.Button(label, size="sm", elem_classes=["chip-btn"])
                                             b.click(fn=add_style_tag, inputs=[style_input, gr.State(tag)], outputs=style_input)
 
                                     gr.HTML('<div class="tag-section-title">Vocals</div>')
                                     with gr.Row():
-                                        for tag in VOCAL_TAGS:
-                                            b = gr.Button(tag, size="sm", elem_classes=["chip-btn"])
+                                        for label, tag in VOCAL_TAGS:
+                                            b = gr.Button(label, size="sm", elem_classes=["chip-btn"])
                                             b.click(fn=add_style_tag, inputs=[style_input, gr.State(tag)], outputs=style_input)
 
                                     gr.HTML('<div class="tag-section-title">Instruments</div>')
                                     with gr.Row():
-                                        for tag in INSTRUMENT_TAGS[:5]:
-                                            b = gr.Button(tag, size="sm", elem_classes=["chip-btn"])
+                                        for label, tag in INSTRUMENT_TAGS[:5]:
+                                            b = gr.Button(label, size="sm", elem_classes=["chip-btn"])
                                             b.click(fn=add_style_tag, inputs=[style_input, gr.State(tag)], outputs=style_input)
                                     with gr.Row():
-                                        for tag in INSTRUMENT_TAGS[5:]:
-                                            b = gr.Button(tag, size="sm", elem_classes=["chip-btn"])
+                                        for label, tag in INSTRUMENT_TAGS[5:]:
+                                            b = gr.Button(label, size="sm", elem_classes=["chip-btn"])
                                             b.click(fn=add_style_tag, inputs=[style_input, gr.State(tag)], outputs=style_input)
 
                                     gr.HTML('<div class="tag-section-title">Mood & Tempo</div>')
                                     with gr.Row():
-                                        for tag in MOOD_TAGS[:4]:
-                                            b = gr.Button(tag, size="sm", elem_classes=["chip-btn"])
+                                        for label, tag in MOOD_TAGS[:4]:
+                                            b = gr.Button(label, size="sm", elem_classes=["chip-btn"])
                                             b.click(fn=add_style_tag, inputs=[style_input, gr.State(tag)], outputs=style_input)
                                     with gr.Row():
-                                        for bpm in BPM_PRESETS:
-                                            b = gr.Button(bpm, size="sm", elem_classes=["chip-btn"])
+                                        for label, bpm in BPM_PRESETS:
+                                            b = gr.Button(label, size="sm", elem_classes=["chip-btn"])
                                             b.click(fn=add_style_tag, inputs=[style_input, gr.State(bpm)], outputs=style_input)
 
                             with gr.Group(elem_classes=["depth-card"]):
@@ -770,7 +886,7 @@ def create_ui():
                                 )
                                 with gr.Row():
                                     for section in ["Intro", "Verse 1", "Verse 2", "Pre-Chorus", "Chorus", "Bridge", "Solo", "Outro"]:
-                                        sb = gr.Button(f"+ [{section}]", size="sm", elem_classes=["chip-btn"])
+                                        sb = gr.Button(f"+ [{section}]", size="sm", elem_classes=["lyric-chip-btn"])
                                         sb.click(fn=insert_lyrics_tag, inputs=[lyrics_input, gr.State(section)], outputs=[lyrics_input])
 
                         with gr.Column(scale=6):
@@ -836,7 +952,9 @@ def create_ui():
                                 with gr.Accordion("📊 Generation Diagnostics & Receipts", open=False):
                                     metadata_output = gr.Code(label="Result Manifest", language="json", lines=5)
 
+                # ──────────────────────────────────────────────────────────────
                 # TAB 2: SCORE REHARMONIZATION & COVER
+                # ──────────────────────────────────────────────────────────────
                 with gr.TabItem("🎼 Score & Reharmonize"):
                     with gr.Group(elem_classes=["depth-card"]):
                         gr.Markdown("""
@@ -872,7 +990,9 @@ V:Chords clef=treble
                                 reharmonized_status = gr.Textbox(label="Status", interactive=False)
                                 reharmonized_meta = gr.Code(label="Receipt", language="json", lines=5)
 
+                # ──────────────────────────────────────────────────────────────
                 # TAB 3: ACOUSTIC & SAMPLING ENGINE
+                # ──────────────────────────────────────────────────────────────
                 with gr.TabItem("⚙️ Acoustic & Sampling Engine"):
                     with gr.Group(elem_classes=["depth-card"]):
                         gr.Markdown("### 🎛️ Flow Matching & Autoregressive Sampling Parameters")
@@ -899,27 +1019,42 @@ V:Chords clef=treble
                         > - **ODE Steps**: 4 steps provides a very fast 25-second preview. 16 steps delivers studio-quality dynamics and crisp acoustic separation.
                         """)
 
+                # ──────────────────────────────────────────────────────────────
                 # TAB 4: SONG LIBRARY & HISTORY
+                # ──────────────────────────────────────────────────────────────
                 with gr.TabItem("📂 Song Library & History"):
                     with gr.Group(elem_classes=["depth-card"]):
                         with gr.Row():
-                            gr.Markdown("### 🗃️ Generated Song Explorer")
-                            refresh_library_btn = gr.Button("🔄 Refresh Library", size="sm", elem_classes=["chip-btn"])
-
-                        library_table = gr.Dataframe(
-                            headers=["Folder", "Created", "Duration", "Seed", "Style", "Path"],
-                            datatype=["str", "str", "str", "str", "str", "str"],
-                            value=scan_song_library(),
-                            interactive=False,
-                        )
+                            library_select = gr.Dropdown(
+                                label="🎵 Select Song to Audition / Play",
+                                choices=initial_library_choices,
+                                value=initial_choice,
+                                scale=8,
+                            )
+                            refresh_library_btn = gr.Button("🔄 Refresh", scale=2, size="sm", elem_classes=["chip-btn"])
 
                         with gr.Row():
                             with gr.Column(scale=6):
-                                library_audio = gr.Audio(label="Song Audio Player", type="filepath")
-                            with gr.Column(scale=6):
-                                library_score = gr.Code(label="ABC Score", language=None, lines=6)
+                                library_audio = gr.Audio(label="Audio Player", value=initial_audio, type="filepath")
+                                library_details = gr.Markdown(value=initial_details)
+                                with gr.Row():
+                                    load_to_studio_btn = gr.Button("📥 Load this Song into Studio", variant="primary", elem_classes=["btn-3d-primary"])
+                                    delete_song_btn = gr.Button("🗑️ Delete Song", variant="secondary")
 
+                            with gr.Column(scale=6):
+                                library_score = gr.Code(label="ABC Music Score", value=initial_score, language=None, lines=10)
+
+                        with gr.Accordion("📋 All Generated Songs Archive", open=True):
+                            library_table = gr.Dataframe(
+                                headers=["Song ID", "Created", "Duration", "Seed", "Style Preview"],
+                                datatype=["str", "str", "str", "str", "str"],
+                                value=get_library_table_data(),
+                                interactive=False,
+                            )
+
+                # ──────────────────────────────────────────────────────────────
                 # TAB 5: SYSTEM & HARDWARE DOCTOR
+                # ──────────────────────────────────────────────────────────────
                 with gr.TabItem("🩺 System Doctor"):
                     with gr.Group(elem_classes=["depth-card"]):
                         gr.Markdown("### 🔍 Hardware Status & Dependency Diagnostics")
@@ -931,15 +1066,23 @@ V:Chords clef=treble
             *YuE2 open-source music model by M-A-P. Windows One-Click & Modern Studio UI by Mr5elfDe5truct.*
             """)
 
+        # ──────────────────────────────────────────────────────────────────────
+        # EVENT HANDLERS & CALLBACKS
+        # ──────────────────────────────────────────────────────────────────────
+
         # Theme switcher client-side action
         theme_dropdown.change(
             fn=None,
             inputs=[theme_dropdown],
             js="""(theme) => {
-                const wrapper = document.getElementById('studio-wrapper');
-                if (wrapper) {
-                    wrapper.className = 'theme-' + theme.toLowerCase().split(' ')[0];
-                }
+                const themeClass = 'theme-' + theme.toLowerCase().split(' ')[0];
+                const classes = ['theme-cyberpunk', 'theme-midnight', 'theme-synthwave', 'theme-emerald'];
+                [document.body, document.querySelector('.gradio-container'), document.getElementById('studio-wrapper')].forEach(el => {
+                    if (el) {
+                        classes.forEach(c => el.classList.remove(c));
+                        el.classList.add(themeClass);
+                    }
+                });
             }""",
         )
 
@@ -982,6 +1125,7 @@ V:Chords clef=treble
                 status_output,
                 metadata_output,
                 library_table,
+                library_select,
             ],
         )
 
@@ -1011,6 +1155,7 @@ V:Chords clef=treble
                 status_output,
                 metadata_output,
                 library_table,
+                library_select,
             ],
         )
 
@@ -1032,17 +1177,59 @@ V:Chords clef=treble
                 reharmonized_status,
                 reharmonized_meta,
                 library_table,
+                library_select,
             ],
         )
 
-        # Refresh Library
-        refresh_library_btn.click(fn=scan_song_library, outputs=[library_table])
+        # Song Library Selection via Dropdown
+        library_select.change(
+            fn=load_song_from_id,
+            inputs=[library_select],
+            outputs=[library_audio, library_score, library_details, library_select],
+        )
 
-        # Select song from table
+        # Table Row Select updates Dropdown and loads song
+        def on_table_select(evt: gr.SelectData, table_data: list):
+            if not table_data or evt is None or not hasattr(evt, "index"):
+                return None, "", "", gr.update()
+            row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+            if row_idx is not None and row_idx < len(table_data):
+                row = table_data[row_idx]
+                folder = row[0]
+                return load_song_from_id(folder)
+            return None, "", "", gr.update()
+
         library_table.select(
-            fn=select_library_song,
+            fn=on_table_select,
             inputs=[library_table],
-            outputs=[library_audio, library_score, metadata_output],
+            outputs=[library_audio, library_score, library_details, library_select],
+        )
+
+        # Refresh Library Button
+        def refresh_library():
+            new_choices = get_library_choices()
+            new_rows = get_library_table_data()
+            first_val = new_choices[0][1] if new_choices else None
+            audio, score, details, _ = load_song_from_id(first_val) if first_val else (None, "", "No songs found.", "")
+            return gr.update(choices=new_choices, value=first_val), new_rows, audio, score, details
+
+        refresh_library_btn.click(
+            fn=refresh_library,
+            outputs=[library_select, library_table, library_audio, library_score, library_details],
+        )
+
+        # Load Selected Song into Studio
+        load_to_studio_btn.click(
+            fn=load_selected_song_into_studio,
+            inputs=[library_select],
+            outputs=[style_input, lyrics_input, reharmonize_score_input],
+        )
+
+        # Delete Selected Song
+        delete_song_btn.click(
+            fn=delete_selected_song,
+            inputs=[library_select],
+            outputs=[library_audio, library_score, library_details, library_select, library_table],
         )
 
         # Doctor
