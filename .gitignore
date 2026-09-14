@@ -19,5 +19,6 @@ runs/
 *.pt
 *.pth
 *.whl
+*.zip
 *.partial
 .DS_Store
