@@ -97,3 +97,20 @@ def test_create_cover_art_procedural(tmp_path: Path):
     assert res.exists()
     assert res.name == "cover.png"
     assert res.parent == tmp_path
+
+
+def test_normalize_cover_engine():
+    from yue2.cover_art import normalize_cover_engine
+
+    assert normalize_cover_engine("cloud") == "cloud"
+    assert normalize_cover_engine("☁️ Cloud AI Diffusion (Flux/SDXL Quality, 0 MB VRAM)") == "cloud"
+    assert normalize_cover_engine("procedural") == "procedural"
+    assert normalize_cover_engine("🎨 Procedural Graphic Studio (Vinyl Sleeve, Offline, 0 MB VRAM)") == "procedural"
+    assert normalize_cover_engine("local") == "local"
+    assert normalize_cover_engine("⚡ Local AI Diffusion (SD-Turbo on GPU, Sequenced)") == "local"
+    assert normalize_cover_engine("none") == "none"
+    assert normalize_cover_engine("🚫 Disabled (No Cover Art)") == "none"
+    assert normalize_cover_engine("disabled") == "none"
+    assert normalize_cover_engine(None) == "cloud"
+    assert normalize_cover_engine("") == "cloud"
+

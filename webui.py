@@ -44,7 +44,7 @@ except ImportError:
 from yue2.pipeline import YuE2Pipeline
 from yue2.protocol import GenerationConfig, Sampling
 from yue2.cli import doctor as cli_doctor
-from yue2.cover_art import create_cover_art, build_cover_prompt
+from yue2.cover_art import create_cover_art, build_cover_prompt, normalize_cover_engine
 from yue2.transcriber import transcribe_audio_to_abc
 from yue2.score_analyzer import (
     analyze_score,
@@ -294,13 +294,14 @@ def generate_music(
             duration_s = round(len(result.audio) / result.sample_rate, 2)
 
             cover_file = None
-            if cover_engine and cover_engine != "none":
-                progress(0.92, desc=f"Synthesizing album cover art ({cover_engine})...")
+            engine_key = normalize_cover_engine(cover_engine)
+            if engine_key != "none":
+                progress(0.92, desc=f"Synthesizing album cover art ({engine_key})...")
                 try:
                     cover_file = create_cover_art(
                         style=style.strip(),
                         lyrics=lyrics.strip(),
-                        engine=cover_engine,
+                        engine=engine_key,
                         output_dir=output_dir,
                         title=output_dir.name,
                         seed=seed,
@@ -383,13 +384,14 @@ def synthesize_from_score(
         duration_s = round(len(result.audio) / result.sample_rate, 2)
 
         cover_file = None
-        if cover_engine and cover_engine != "none":
-            progress(0.92, desc=f"Synthesizing album cover art ({cover_engine})...")
+        engine_key = normalize_cover_engine(cover_engine)
+        if engine_key != "none":
+            progress(0.92, desc=f"Synthesizing album cover art ({engine_key})...")
             try:
                 cover_file = create_cover_art(
                     style=style.strip(),
                     lyrics=lyrics.strip(),
-                    engine=cover_engine,
+                    engine=engine_key,
                     output_dir=output_dir,
                     title=output_dir.name,
                     seed=seed,
@@ -488,8 +490,16 @@ def get_library_table_data() -> list[list[str]]:
 
 def load_song_from_id(folder_name: str):
     if not folder_name:
-        return None, None, "", "Select a song from the library above.", ""
+        return None, None, "", "Select a song from the library above."
+    folder_name = str(folder_name).strip()
+    if " " in folder_name and not (Path("outputs") / folder_name).exists():
+        candidate = folder_name.split()[0]
+        if (Path("outputs") / candidate).exists():
+            folder_name = candidate
     folder_path = Path("outputs") / folder_name
+    if not folder_path.exists() or not folder_path.is_dir():
+        return None, None, "", f"Song `{folder_name}` not found in outputs library."
+
     audio_path = str(folder_path / "audio.flac") if (folder_path / "audio.flac").exists() else None
     cover_path = str(folder_path / "cover.png") if (folder_path / "cover.png").exists() else None
     score_text = ""
@@ -518,12 +528,17 @@ def load_song_from_id(folder_name: str):
         except Exception:
             pass
 
-    return audio_path, cover_path, score_text, details_md, folder_name
+    return audio_path, cover_path, score_text, details_md
 
 
 def load_selected_song_into_studio(folder_name: str):
     if not folder_name:
         raise gr.Error("No song selected to load into studio.")
+    folder_name = str(folder_name).strip()
+    if " " in folder_name and not (Path("outputs") / folder_name).exists():
+        candidate = folder_name.split()[0]
+        if (Path("outputs") / candidate).exists():
+            folder_name = candidate
     folder_path = Path("outputs") / folder_name
     req_file = folder_path / "request.json"
     score_file = folder_path / "score.abc"
@@ -553,13 +568,18 @@ def load_selected_song_into_studio(folder_name: str):
 def delete_selected_song(folder_name: str):
     if not folder_name:
         raise gr.Error("No song selected to delete.")
+    folder_name = str(folder_name).strip()
+    if " " in folder_name and not (Path("outputs") / folder_name).exists():
+        candidate = folder_name.split()[0]
+        if (Path("outputs") / candidate).exists():
+            folder_name = candidate
     folder_path = Path("outputs") / folder_name
     if folder_path.exists() and folder_path.is_dir():
         shutil.rmtree(folder_path)
     new_choices = get_library_choices()
     new_rows = get_library_table_data()
     first_choice = new_choices[0][1] if new_choices else None
-    audio, cover, score, details, _ = load_song_from_id(first_choice) if first_choice else (None, None, "", "No songs left.", "")
+    audio, cover, score, details = load_song_from_id(first_choice) if first_choice else (None, None, "", "No songs left.")
     gr.Info(f"Deleted '{folder_name}' from library.")
     return audio, cover, score, details, gr.update(choices=new_choices, value=first_choice), new_rows
 
@@ -567,6 +587,11 @@ def delete_selected_song(folder_name: str):
 def regenerate_cover_art_for_song(folder_name: str, engine: str):
     if not folder_name:
         raise gr.Error("Please select a song from the library first.")
+    folder_name = str(folder_name).strip()
+    if " " in folder_name and not (Path("outputs") / folder_name).exists():
+        candidate = folder_name.split()[0]
+        if (Path("outputs") / candidate).exists():
+            folder_name = candidate
     folder_path = Path("outputs") / folder_name
     req_file = folder_path / "request.json"
     style = "modern music"
@@ -580,10 +605,13 @@ def regenerate_cover_art_for_song(folder_name: str, engine: str):
             seed = req.get("seed", seed)
         except Exception:
             pass
+    engine_key = normalize_cover_engine(engine)
+    if engine_key == "none":
+        raise gr.Error("Cover engine is set to disabled. Choose Cloud, Procedural, or Local AI.")
     cov = create_cover_art(
         style=style,
         lyrics=lyrics,
-        engine=engine,
+        engine=engine_key,
         output_dir=folder_path,
         title=folder_name,
         seed=seed,
@@ -638,8 +666,8 @@ def compare_two_songs(song_a_id: str, song_b_id: str):
     if not song_a_id or not song_b_id:
         return None, None, "", None, None, "", "Select both Song A and Song B to compare."
 
-    audio_a, cover_a, score_a, details_a, _ = load_song_from_id(song_a_id)
-    audio_b, cover_b, score_b, details_b, _ = load_song_from_id(song_b_id)
+    audio_a, cover_a, score_a, details_a = load_song_from_id(song_a_id)
+    audio_b, cover_b, score_b, details_b = load_song_from_id(song_b_id)
 
     diff_data = diff_two_scores(score_a or "", score_b or "")
 
@@ -948,7 +976,7 @@ body, .gradio-container, #studio-wrapper {
 def create_ui():
     initial_library_choices = get_library_choices()
     initial_choice = initial_library_choices[0][1] if initial_library_choices else None
-    initial_audio, initial_cover, initial_score, initial_details, _ = load_song_from_id(initial_choice) if initial_choice else (None, None, "", "Select a song above.", "")
+    initial_audio, initial_cover, initial_score, initial_details = load_song_from_id(initial_choice) if initial_choice else (None, None, "", "Select a song above.")
 
     with gr.Blocks(title="YuE2 Music Studio") as app:
         # Client-side style injection & Theme wrapper
@@ -1077,12 +1105,16 @@ def create_ui():
                                             ("Off (Direct audio without symbolic score)", "off"),
                                         ],
                                         value="full",
+                                        filterable=False,
+                                        allow_custom_value=False,
                                         scale=6,
                                     )
                                     stage_choice = gr.Dropdown(
                                         label="Stage",
                                         choices=["Full Song (Audio + Score)", "Plan Score Only"],
                                         value="Full Song (Audio + Score)",
+                                        filterable=False,
+                                        allow_custom_value=False,
                                         scale=4,
                                     )
 
@@ -1112,6 +1144,8 @@ def create_ui():
                                             ("🚫 Disabled (No Cover Art)", "none"),
                                         ],
                                         value="cloud",
+                                        filterable=False,
+                                        allow_custom_value=False,
                                         scale=12,
                                     )
 
@@ -1223,12 +1257,14 @@ def create_ui():
                                     sample_cover_engine = gr.Dropdown(
                                         label="Cover Art Engine",
                                         choices=[
-                                            ("☁️ Cloud AI", "cloud"),
-                                            ("🎨 Procedural", "procedural"),
-                                            ("⚡ Local AI", "local"),
-                                            ("🚫 None", "none"),
+                                            ("☁️ Cloud AI Diffusion (Flux/SDXL Quality, 0 MB VRAM)", "cloud"),
+                                            ("🎨 Procedural Graphic Studio (Vinyl Sleeve, Offline, 0 MB VRAM)", "procedural"),
+                                            ("⚡ Local AI Diffusion (SD-Turbo on GPU, Sequenced)", "local"),
+                                            ("🚫 Disabled (No Cover Art)", "none"),
                                         ],
                                         value="cloud",
+                                        filterable=False,
+                                        allow_custom_value=False,
                                     )
 
                                 sample_generate_btn = gr.Button(
@@ -1311,12 +1347,16 @@ V:Chords clef=treble
                                 label="Track A (Reference / Original)",
                                 choices=initial_library_choices,
                                 value=initial_choice,
+                                filterable=False,
+                                allow_custom_value=False,
                                 scale=5,
                             )
                             compare_b_select = gr.Dropdown(
                                 label="Track B (Remake / Variation)",
                                 choices=initial_library_choices,
                                 value=initial_library_choices[1][1] if len(initial_library_choices) > 1 else initial_choice,
+                                filterable=False,
+                                allow_custom_value=False,
                                 scale=5,
                             )
                             run_compare_btn = gr.Button("⚖️ Compare Tracks", variant="primary", scale=2, elem_classes=["btn-3d-primary"])
@@ -1379,6 +1419,8 @@ V:Chords clef=treble
                                 label="🎵 Select Song to Audition / Play",
                                 choices=initial_library_choices,
                                 value=initial_choice,
+                                filterable=False,
+                                allow_custom_value=False,
                                 scale=8,
                             )
                             refresh_library_btn = gr.Button("🔄 Refresh", scale=2, size="sm", elem_classes=["chip-btn"])
@@ -1390,11 +1432,13 @@ V:Chords clef=treble
                                     regen_cover_engine = gr.Dropdown(
                                         label="Engine",
                                         choices=[
-                                            ("☁️ Cloud AI", "cloud"),
-                                            ("🎨 Procedural", "procedural"),
-                                            ("⚡ Local AI", "local"),
+                                            ("☁️ Cloud AI Diffusion (Flux/SDXL Quality, 0 MB VRAM)", "cloud"),
+                                            ("🎨 Procedural Graphic Studio (Vinyl Sleeve, Offline, 0 MB VRAM)", "procedural"),
+                                            ("⚡ Local AI Diffusion (SD-Turbo on GPU, Sequenced)", "local"),
                                         ],
                                         value="cloud",
+                                        filterable=False,
+                                        allow_custom_value=False,
                                         scale=7,
                                     )
                                     regen_cover_btn = gr.Button("🎨 Regen Cover", scale=5, size="sm", elem_classes=["chip-btn"])
@@ -1556,19 +1600,35 @@ V:Chords clef=treble
         library_select.change(
             fn=load_song_from_id,
             inputs=[library_select],
-            outputs=[library_audio, library_cover, library_score, library_details, library_select],
+            outputs=[library_audio, library_cover, library_score, library_details],
         )
 
         # Table Row Select updates Dropdown and loads song
-        def on_table_select(evt: gr.SelectData, table_data: list):
-            if not table_data or evt is None or not hasattr(evt, "index"):
-                return None, None, "", "", gr.update()
-            row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
-            if row_idx is not None and row_idx < len(table_data):
-                row = table_data[row_idx]
-                folder = row[0]
-                return load_song_from_id(folder)
-            return None, None, "", "", gr.update()
+        def on_table_select(evt: gr.SelectData, table_data):
+            folder = None
+            if evt is not None:
+                if getattr(evt, "row_value", None) and len(evt.row_value) > 0:
+                    folder = str(evt.row_value[0]).strip()
+                elif getattr(evt, "index", None) is not None:
+                    row_idx = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+                    if row_idx is not None:
+                        try:
+                            if hasattr(table_data, "iloc") and row_idx < len(table_data):
+                                folder = str(table_data.iloc[row_idx, 0]).strip()
+                            elif isinstance(table_data, list) and row_idx < len(table_data):
+                                folder = str(table_data[row_idx][0]).strip()
+                        except Exception:
+                            pass
+                elif getattr(evt, "value", None):
+                    val = str(evt.value).strip()
+                    if (Path("outputs") / val).exists():
+                        folder = val
+
+            if not folder:
+                return None, None, "", "Select a song from the library above.", gr.update()
+
+            audio_path, cover_path, score_text, details_md = load_song_from_id(folder)
+            return audio_path, cover_path, score_text, details_md, gr.update(value=folder)
 
         library_table.select(
             fn=on_table_select,
@@ -1643,7 +1703,7 @@ V:Chords clef=treble
             new_rows = get_library_table_data()
             first_val = new_choices[0][1] if new_choices else None
             second_val = new_choices[1][1] if len(new_choices) > 1 else first_val
-            audio, cover, score, details, _ = load_song_from_id(first_val) if first_val else (None, None, "", "No songs found.", "")
+            audio, cover, score, details = load_song_from_id(first_val) if first_val else (None, None, "", "No songs found.")
             return (
                 gr.update(choices=new_choices, value=first_val),
                 new_rows,

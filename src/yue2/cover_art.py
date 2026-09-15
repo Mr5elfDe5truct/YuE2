@@ -342,21 +342,35 @@ def generate_local_ai_cover(
     return output_path
 
 
+def normalize_cover_engine(engine: str | None) -> str:
+    """Normalize user or dropdown engine string to 'cloud' | 'procedural' | 'local' | 'none'."""
+    if not engine:
+        return "cloud"
+    e = str(engine).lower().strip()
+    if "procedural" in e:
+        return "procedural"
+    if "local" in e:
+        return "local"
+    if "none" in e or "disable" in e or e == "off" or "no cover" in e:
+        return "none"
+    return "cloud"
+
+
 def create_cover_art(
     style: str,
     lyrics: str = "",
     engine: str = "cloud",
     output_dir: str | Path = "outputs",
     title: str = "YuE2 Track",
-    seed: int = 42
-) -> Optional[Path]:
+    seed: int = 42,
+) -> Optional[str]:
     """
-    Unified high-level dispatcher for cover art generation.
+    Generate an album cover artwork for a YuE2 song.
 
     Parameters:
     - style: Song genre / style prompt
     - lyrics: Lyrics content
-    - engine: 'cloud' | 'procedural' | 'local' | 'none'
+    - engine: 'cloud' | 'procedural' | 'local' | 'none' (or any UI choice string)
     - output_dir: Directory where cover.png should be written
     - title: Track title or folder name
     - seed: Integer seed
@@ -364,8 +378,8 @@ def create_cover_art(
     Returns:
     Path to cover.png or None if disabled or failed.
     """
-    engine = (engine or "cloud").lower()
-    if engine in ("none", "disabled", "off"):
+    engine_key = normalize_cover_engine(engine)
+    if engine_key == "none":
         return None
 
     out_dir = Path(output_dir)
@@ -375,7 +389,7 @@ def create_cover_art(
     prompt = build_cover_prompt(style=style, lyrics=lyrics, title=title)
 
     # 1. Procedural Engine
-    if "procedural" in engine:
+    if engine_key == "procedural":
         try:
             return generate_procedural_cover(
                 style=style,
@@ -389,7 +403,7 @@ def create_cover_art(
             return None
 
     # 2. Local AI Diffusion
-    elif "local" in engine:
+    elif engine_key == "local":
         try:
             return generate_local_ai_cover(
                 prompt=prompt,
